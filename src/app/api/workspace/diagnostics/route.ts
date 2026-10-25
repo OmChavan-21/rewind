@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { runWorkspaceDiagnostics } from "@/engine/codeDiagnostics";
+import { SecurityError } from "@/security/boundaries";
 
 export async function GET(request: Request) {
   try {
@@ -12,6 +13,9 @@ export async function GET(request: Request) {
 
     return NextResponse.json(result);
   } catch (error: unknown) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
     const message = error instanceof Error ? error.message : "Error analyzing workspace diagnostics";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -27,6 +31,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error: unknown) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
     const message = error instanceof Error ? error.message : "Error analyzing workspace diagnostics";
     return NextResponse.json({ error: message }, { status: 500 });
   }

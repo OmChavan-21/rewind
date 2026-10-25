@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { Snapshot, AgentAction } from "../types/recovery";
+import { validateSnapshotId, SecurityError } from "../security/boundaries";
 
 /**
  * Calculates SHA-256 hash of string or buffer content.
@@ -69,8 +70,17 @@ export function saveSnapshotRecord(
   snapshot: Snapshot,
   fileContents: Map<string, string>
 ): void {
+  validateSnapshotId(snapshot.id);
   const { snapshotsDir } = ensureStoreLayout(storeRoot);
   const snapshotFolder = path.join(snapshotsDir, snapshot.id);
+
+  // Containment verification: ensure target folder is strictly inside snapshotsDir
+  const canonicalSnapshotsDir = fs.realpathSync(/*turbopackIgnore: true*/ snapshotsDir);
+  const resolvedFolder = path.resolve(/*turbopackIgnore: true*/ snapshotFolder);
+  if (!resolvedFolder.startsWith(canonicalSnapshotsDir + path.sep) && resolvedFolder !== canonicalSnapshotsDir) {
+    throw new SecurityError(`Snapshot directory escapes store: ${snapshot.id}`);
+  }
+
   const filesFolder = path.join(snapshotFolder, "files");
 
   if (!fs.existsSync(filesFolder)) {
@@ -99,8 +109,19 @@ export function loadSnapshotRecord(
   storeRoot: string,
   snapshotId: string
 ): { snapshot: Snapshot; fileContents: Map<string, string> } | null {
+  validateSnapshotId(snapshotId);
   const { snapshotsDir } = ensureStoreLayout(storeRoot);
   const snapshotFolder = path.join(snapshotsDir, snapshotId);
+
+  // Containment verification
+  const canonicalSnapshotsDir = fs.existsSync(/*turbopackIgnore: true*/ snapshotsDir)
+    ? fs.realpathSync(/*turbopackIgnore: true*/ snapshotsDir)
+    : path.resolve(/*turbopackIgnore: true*/ snapshotsDir);
+  const resolvedFolder = path.resolve(/*turbopackIgnore: true*/ snapshotFolder);
+  if (!resolvedFolder.startsWith(canonicalSnapshotsDir + path.sep) && resolvedFolder !== canonicalSnapshotsDir) {
+    throw new SecurityError(`Snapshot directory escapes store: ${snapshotId}`);
+  }
+
   const metaPath = path.join(snapshotFolder, "meta.json");
   const filesFolder = path.join(snapshotFolder, "files");
 

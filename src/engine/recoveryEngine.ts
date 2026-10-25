@@ -20,6 +20,7 @@ import {
   validateActionType,
   EXCLUDED_DIR_NAMES,
   SecurityError,
+  validateSnapshotId,
 } from "../security/boundaries";
 import {
   calculateSha256,
@@ -219,6 +220,7 @@ export function getSnapshot(
   storeRoot: string,
   snapshotId: string
 ): { snapshot: Snapshot; fileContents: Map<string, string> } | null {
+  validateSnapshotId(snapshotId);
   return loadSnapshotRecord(storeRoot, snapshotId);
 }
 
@@ -236,9 +238,17 @@ export function getAuditHistory(storeRoot: string): AgentAction[] {
 export function compareWorkspaceWithSnapshot(
   workspaceRoot: string,
   storeRoot: string,
-  snapshotId: string
+  snapshotId: string,
+  expectedProjectId?: string
 ): FileChange[] {
+  validateSnapshotId(snapshotId);
   const loaded = loadSnapshotRecord(storeRoot, snapshotId);
+  if (loaded && expectedProjectId && loaded.snapshot.workspaceId) {
+    const isDefault = (expectedProjectId === "demo-workspace" && (!loaded.snapshot.workspaceId || loaded.snapshot.workspaceId === "demo-workspace"));
+    if (!isDefault && loaded.snapshot.workspaceId !== expectedProjectId) {
+      throw new SecurityError(`Snapshot '${snapshotId}' belongs to project '${loaded.snapshot.workspaceId}', not '${expectedProjectId}'.`);
+    }
+  }
   if (!loaded) {
     throw new Error(`Snapshot '${snapshotId}' not found.`);
   }
@@ -373,9 +383,20 @@ export function restoreSnapshot(
   options: {
     expectedBaselineSnapshotId?: string;
     force?: boolean;
+    expectedProjectId?: string;
   } = {}
 ): RecoveryResult {
+  validateSnapshotId(snapshotId);
+  if (options.expectedBaselineSnapshotId) {
+    validateSnapshotId(options.expectedBaselineSnapshotId);
+  }
   const loaded = loadSnapshotRecord(storeRoot, snapshotId);
+  if (loaded && options.expectedProjectId && loaded.snapshot.workspaceId) {
+    const isDefault = (options.expectedProjectId === "demo-workspace" && (!loaded.snapshot.workspaceId || loaded.snapshot.workspaceId === "demo-workspace"));
+    if (!isDefault && loaded.snapshot.workspaceId !== options.expectedProjectId) {
+      throw new SecurityError(`Cross-project restore blocked: Snapshot '${snapshotId}' belongs to project '${loaded.snapshot.workspaceId}', not '${options.expectedProjectId}'.`);
+    }
+  }
   if (!loaded) {
     throw new Error(`Target snapshot '${snapshotId}' not found.`);
   }

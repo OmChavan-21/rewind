@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { askProjectQuestion } from "@/server/ragService";
+import { SecurityError } from "@/security/boundaries";
 
 export async function POST(request: Request) {
   try {
@@ -28,6 +29,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error: unknown) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
     const message = error instanceof Error ? error.message : "Error asking project documents";
     return NextResponse.json({ error: message }, { status: 500 });
   }

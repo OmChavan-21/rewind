@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { loadProjectVectorStore } from "@/server/ragService";
+import { SecurityError } from "@/security/boundaries";
 
 export async function GET(request: Request) {
   try {
@@ -19,6 +20,9 @@ export async function GET(request: Request) {
       updatedAt: store.updatedAt,
     });
   } catch (error: unknown) {
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
     const message = error instanceof Error ? error.message : "Error listing RAG documents";
     return NextResponse.json({ error: message }, { status: 500 });
   }

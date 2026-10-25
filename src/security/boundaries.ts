@@ -53,6 +53,9 @@ export const FORBIDDEN_FILE_PREFIXES = [
   ".env", // Never snapshot or expose env secrets
 ];
 
+// Windows reserved device names: CON, PRN, AUX, NUL, COM1-9, LPT1-9
+export const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+
 // Server-side allowlist of agent actions
 export const ALLOWED_ACTION_TYPES = new Set([
   "snapshot_create",
@@ -65,22 +68,46 @@ export const ALLOWED_ACTION_TYPES = new Set([
 ]);
 
 /**
+ * Strictly validates snapshot ID format to prevent directory traversal and filesystem escapes.
+ */
+export function validateSnapshotId(snapshotId: string): void {
+  if (typeof snapshotId !== "string" || !snapshotId.trim()) {
+    throw new SecurityError("Snapshot ID must be a non-empty string.");
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(snapshotId) || snapshotId.includes("..")) {
+    throw new SecurityError(`Invalid snapshot ID format: '${snapshotId}'`);
+  }
+}
+
+/**
+ * Strictly validates project ID format to prevent directory traversal and filesystem escapes.
+ */
+export function validateProjectId(projectId: string): void {
+  if (typeof projectId !== "string" || !projectId.trim()) {
+    throw new SecurityError("Project ID must be a non-empty string.");
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(projectId) || projectId.includes("..")) {
+    throw new SecurityError(`Invalid project ID format: '${projectId}'`);
+  }
+}
+
+/**
  * Sanitizes and normalizes relative path.
- * Rejects path traversal, null bytes, absolute paths, and drive letters.
+ * Rejects path traversal, null bytes, control characters, alternate data streams (':'), absolute paths, and drive letters.
  */
 export function sanitizeRelativePath(rawRelativePath: string): string {
   if (typeof rawRelativePath !== "string" || !rawRelativePath.trim()) {
     throw new SecurityError("Path must be a non-empty string.");
   }
 
-  // Reject null bytes
-  if (rawRelativePath.includes("\0")) {
-    throw new SecurityError("Null bytes are strictly forbidden in path.");
+  // Reject null bytes and ASCII control characters (0-31)
+  if (rawRelativePath.includes("\0") || /[\x00-\x1F]/.test(rawRelativePath)) {
+    throw new SecurityError("Control characters and null bytes are strictly forbidden in path.");
   }
 
-  // Reject Windows drive letter roots (e.g. C:) or absolute paths
-  if (/^[a-zA-Z]:/.test(rawRelativePath) || rawRelativePath.startsWith("/") || rawRelativePath.startsWith("\\")) {
-    throw new SecurityError("Absolute paths and drive letters are not permitted.");
+  // Reject Windows drive letter roots (e.g. C:), alternate data streams (':'), or absolute paths
+  if (rawRelativePath.includes(":") || rawRelativePath.startsWith("/") || rawRelativePath.startsWith("\\")) {
+    throw new SecurityError("Absolute paths, drive letters, and alternate data streams (':') are not permitted.");
   }
 
   // Normalize separators to standard POSIX slash for inspection
@@ -157,6 +184,13 @@ export function isPermittedFile(relativePath: string): boolean {
   // Exclude ignored directories
   for (const segment of segments.slice(0, -1)) {
     if (EXCLUDED_DIR_NAMES.has(segment)) {
+      return false;
+    }
+  }
+
+  // Reject Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) in any segment
+  for (const segment of segments) {
+    if (WINDOWS_RESERVED_NAMES.test(segment)) {
       return false;
     }
   }

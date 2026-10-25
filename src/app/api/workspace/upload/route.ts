@@ -7,6 +7,7 @@ import {
   resolveAndValidatePath,
   isPermittedFile,
   sanitizeRelativePath,
+  validateProjectId,
   SecurityError,
   FileTooLargeError,
   ALLOWED_EXTENSIONS_LIST,
@@ -15,6 +16,7 @@ import {
   validateUploadLimits,
   getDirectorySizeBytes,
   computeDynamicLimits,
+  getResourceLimits,
 } from "@/security/limits";
 import {
   createSnapshot,
@@ -27,6 +29,22 @@ import { ingestDocument } from "@/server/ragService";
 
 export async function POST(request: Request) {
   try {
+    const maxTotalAllowed = getResourceLimits().maxTotalUploadSizeBytes;
+
+    // Pre-flight check: Reject requests with Content-Length exceeding maximum total limit before processing
+    const contentLengthHeader = request.headers.get("content-length");
+    if (contentLengthHeader) {
+      const contentLength = parseInt(contentLengthHeader, 10);
+      if (!isNaN(contentLength) && contentLength > maxTotalAllowed) {
+        return NextResponse.json(
+          {
+            error: `Upload request size (${contentLength} bytes) exceeds maximum total upload limit of ${maxTotalAllowed} bytes.`,
+          },
+          { status: 413 }
+        );
+      }
+    }
+
     const contentType = request.headers.get("content-type") || "";
 
     const uploadedFiles: {
@@ -56,6 +74,7 @@ export async function POST(request: Request) {
         entries = formData.getAll("file");
       }
 
+      let cumulativeBytes = 0;
       for (const entry of entries) {
         if (
           typeof entry === "object" &&
@@ -66,6 +85,17 @@ export async function POST(request: Request) {
           const fileEntry = entry as unknown as { name?: string; arrayBuffer: () => Promise<ArrayBuffer> };
           const fileName = typeof fileEntry.name === "string" && fileEntry.name.trim() ? fileEntry.name.trim() : "uploaded_file";
           const buffer = Buffer.from(await fileEntry.arrayBuffer());
+          cumulativeBytes += buffer.length;
+
+          if (cumulativeBytes > maxTotalAllowed) {
+            return NextResponse.json(
+              {
+                error: `Total upload size exceeded maximum limit of ${maxTotalAllowed} bytes during upload processing.`,
+              },
+              { status: 413 }
+            );
+          }
+
           const cleanName = sanitizeRelativePath(fileName);
           uploadedFiles.push({
             name: fileName,
@@ -86,6 +116,7 @@ export async function POST(request: Request) {
       }
 
       if (Array.isArray(body.files)) {
+        let cumulativeBytes = 0;
         for (const f of body.files) {
           if (f && typeof f.name === "string" && f.name.trim()) {
             const cleanName = sanitizeRelativePath(f.name.trim());
@@ -97,6 +128,17 @@ export async function POST(request: Request) {
             } else {
               buffer = Buffer.from("");
             }
+            cumulativeBytes += buffer.length;
+
+            if (cumulativeBytes > maxTotalAllowed) {
+              return NextResponse.json(
+                {
+                  error: `Total upload size exceeded maximum limit of ${maxTotalAllowed} bytes.`,
+                },
+                { status: 413 }
+              );
+            }
+
             uploadedFiles.push({
               name: f.name.trim(),
               contentBuffer: buffer,
@@ -114,14 +156,17 @@ export async function POST(request: Request) {
       );
     }
 
-    // Server-side project validation: prevent uploading to non-existent or invalid projects
-    const defaultStore = getDefaultStoreRoot();
-    const registry = loadProjectsRegistry(defaultStore);
-    if (targetProjectId && !registry.projects[targetProjectId]) {
-      return NextResponse.json(
-        { error: `Project '${targetProjectId}' does not exist.` },
-        { status: 404 }
-      );
+    // Validate project ID format and existence
+    if (targetProjectId) {
+      validateProjectId(targetProjectId);
+      const defaultStore = getDefaultStoreRoot();
+      const registry = loadProjectsRegistry(defaultStore);
+      if (!registry.projects[targetProjectId] && targetProjectId !== "demo-workspace") {
+        return NextResponse.json(
+          { error: `Project '${targetProjectId}' does not exist.` },
+          { status: 404 }
+        );
+      }
     }
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(targetProjectId);
@@ -145,7 +190,7 @@ export async function POST(request: Request) {
     }[] = [];
 
     for (const file of uploadedFiles) {
-      // Validate extension and forbidden prefixes
+      // Validate extension, forbidden prefixes, and Windows reserved names
       if (!isPermittedFile(file.relPath)) {
         return NextResponse.json(
           {
@@ -171,61 +216,64 @@ export async function POST(request: Request) {
       });
     }
 
-    // 3. If conflicts exist and overwrite was not approved, refuse write with conflict list
+    // If conflicts exist and overwrite is false, refuse write before any modification
     if (conflictingFiles.length > 0) {
       return NextResponse.json(
         {
-          error: "Files already exist in workspace. Overwrite confirmation required.",
-          conflict: true,
+          error: `File(s) already exist: ${conflictingFiles.join(", ")}. Set overwrite=true to replace existing files.`,
           conflictingFiles,
         },
         { status: 409 }
       );
     }
 
-    // 4. Capture an automatic safety snapshot before writing uploaded files
+    // 3. AUTOMATIC SAFETY SNAPSHOT: Capture pre-upload state before writing files
     const safetySnapshot = createSnapshot(
       workspaceRoot,
       storeRoot,
-      `Pre-Upload Safety (${uploadedFiles.length} file${uploadedFiles.length > 1 ? "s" : ""})`,
-      `Automatic safety checkpoint before writing uploaded files: ${uploadedFiles.map((f) => f.relPath).join(", ")}`,
-      { workspaceId: projectId }
+      `Pre-upload: ${validatedFiles.map((f) => path.basename(f.relPath)).join(", ")}`.slice(0, 50),
+      `Automated safety snapshot captured prior to uploading ${validatedFiles.length} file(s).`,
+      {
+        action: "file_upload",
+        fileCount: validatedFiles.length,
+        files: validatedFiles.map((f) => f.relPath),
+        projectId,
+      }
     );
 
-    // 5. Write files safely using atomic writes
+    // 4. Safe atomic writes to designated project workspace
     const writtenFiles: string[] = [];
-    const ragIndexedFiles: string[] = [];
-    const ragErrors: { file: string; error: string }[] = [];
-
-    for (const item of validatedFiles) {
-      const parentDir = path.dirname(item.canonicalPath);
+    for (const vf of validatedFiles) {
+      const parentDir = path.dirname(vf.canonicalPath);
       if (!fs.existsSync(parentDir)) {
         fs.mkdirSync(parentDir, { recursive: true });
       }
+      atomicWriteFileSync(vf.canonicalPath, vf.buffer);
+      writtenFiles.push(vf.relPath);
+    }
 
-      atomicWriteFileSync(item.canonicalPath, item.buffer);
-      writtenFiles.push(item.relPath);
+    // 5. Ingest into RAG if requested
+    const ragIndexedFiles: string[] = [];
+    const ragErrors: { file: string; error: string }[] = [];
 
-      // Ingest into RAG if user selected ingestion (supports Python, code, Markdown, text, and PDF)
-      if (ingestToRAG) {
+    if (ingestToRAG) {
+      for (const vf of validatedFiles) {
         try {
-          await ingestDocument(projectId, item.relPath, item.buffer, storeRoot);
-          ragIndexedFiles.push(item.relPath);
-        } catch (ragErr) {
-          const errMsg = ragErr instanceof Error ? ragErr.message : "RAG ingestion failed";
-          console.warn(`[RAG Ingestion Warning for ${item.relPath}]:`, errMsg);
-          ragErrors.push({ file: item.relPath, error: errMsg });
+          await ingestDocument(projectId, vf.relPath, vf.buffer, storeRoot);
+          ragIndexedFiles.push(vf.relPath);
+        } catch (ragErr: unknown) {
+          const errMsg = ragErr instanceof Error ? ragErr.message : String(ragErr);
+          ragErrors.push({ file: vf.relPath, error: errMsg });
+          console.warn(`[RAG Ingestion Warning for ${vf.relPath}]:`, errMsg);
         }
       }
     }
 
     // 6. Record audit action
     appendAuditAction(storeRoot, {
-      id: `act_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`,
-      projectId,
+      id: `act_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
       timestamp: new Date().toISOString(),
       actionType: "file_upload",
-      targetPath: writtenFiles.join(", "),
       summary: `Uploaded ${writtenFiles.length} file(s) to project '${projectId}'`,
       status: "success",
       snapshotIdBefore: safetySnapshot.id,

@@ -7,7 +7,7 @@ import { getDefaultWorkspaceRoot, getDefaultStoreRoot, ensureWorkspaceAndStore }
 import { initializeDemoWorkspace } from "./demoWorkspace";
 import { getDirectorySizeBytes } from "../security/limits";
 import { listStoredSnapshots, atomicWriteFileSync } from "./storage";
-import { SecurityError } from "../security/boundaries";
+import { SecurityError, validateProjectId } from "../security/boundaries";
 
 export const DEFAULT_PROJECT_ID = "demo-workspace";
 
@@ -100,13 +100,18 @@ export function resolveProjectWorkspace(projectId: string, storeRoot: string = g
     return getDefaultWorkspaceRoot();
   }
 
-  // Sanitize project ID
-  if (!/^[a-zA-Z0-9_-]+$/.test(projectId)) {
-    throw new SecurityError(`Invalid project ID format: '${projectId}'`);
-  }
+  // Sanitize and validate project ID
+  validateProjectId(projectId);
 
   const projectsDir = path.join(storeRoot, "projects", projectId);
   const workspaceDir = path.join(projectsDir, "workspace");
+
+  // Verify containment
+  const canonicalStore = fs.existsSync(storeRoot) ? fs.realpathSync(storeRoot) : path.resolve(storeRoot);
+  const resolvedWorkspace = path.resolve(workspaceDir);
+  if (!resolvedWorkspace.startsWith(canonicalStore + path.sep)) {
+    throw new SecurityError(`Project workspace path escapes store root: '${projectId}'`);
+  }
 
   if (!fs.existsSync(workspaceDir)) {
     fs.mkdirSync(workspaceDir, { recursive: true });
