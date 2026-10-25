@@ -22,7 +22,11 @@ import {
   resolveProjectWorkspace,
 } from "../src/engine/projectManager";
 import { getContextRoots } from "../src/server/workspaceContext";
-import { POST as uploadPost } from "../src/app/api/workspace/upload/route";
+import {
+  POST as uploadPost,
+  createBoundedBodyStream,
+  StreamPayloadTooLargeError,
+} from "../src/app/api/workspace/upload/route";
 import { GET as filesGet } from "../src/app/api/workspace/files/route";
 import { GET as snapshotGet } from "../src/app/api/snapshots/[id]/route";
 import { POST as snapshotRestorePost } from "../src/app/api/snapshots/[id]/restore/route";
@@ -275,6 +279,76 @@ describe("Rewind Dedicated Security Hardening & Isolation Test Suite", () => {
     assert.strictEqual(res.status, 413);
     const data = await res.json();
     assert.ok(data.error.includes("Total upload size exceeded"));
+  });
+
+  it("11b. rejects streamed upload without Content-Length header when body exceeds maximum limit", async () => {
+    // Generate a stream exceeding 25MB without providing a Content-Length header
+    const chunk = new Uint8Array(1024 * 1024); // 1 MB chunk
+    chunk.fill(65); // 'A'
+    let chunksSent = 0;
+    const totalChunks = 26; // 26 MB > 25 MB limit
+
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (chunksSent < totalChunks) {
+          controller.enqueue(chunk);
+          chunksSent++;
+        } else {
+          controller.close();
+        }
+      },
+    });
+
+    const req = new Request("http://localhost/api/workspace/upload", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Note: No Content-Length header provided (simulating chunked stream)
+      },
+      body: stream,
+      // @ts-expect-error duplex required for streaming body
+      duplex: "half",
+    });
+
+    const res = await uploadPost(req);
+    assert.strictEqual(res.status, 413);
+    const data = await res.json();
+    assert.ok(data.error.includes("Payload Too Large") || data.error.includes("Total upload size exceeded"));
+  });
+
+  it("11c. createBoundedBodyStream halts enqueuing chunks once limit is reached, protecting memory", async () => {
+    let chunksPulled = 0;
+    const sourceStream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        chunksPulled++;
+        controller.enqueue(new Uint8Array(100));
+      },
+    });
+
+    // Bound to 250 bytes (should halt after 3 pulls = 300 bytes)
+    const bounded = createBoundedBodyStream(sourceStream, 250);
+    const reader = bounded.getReader();
+
+    const chunk1 = await reader.read();
+    assert.strictEqual(chunk1.done, false);
+    assert.strictEqual(chunk1.value?.length, 100);
+
+    const chunk2 = await reader.read();
+    assert.strictEqual(chunk2.done, false);
+    assert.strictEqual(chunk2.value?.length, 100);
+
+    // Third read exceeds 250 bytes -> must reject with StreamPayloadTooLargeError
+    await assert.rejects(
+      async () => {
+        await reader.read();
+      },
+      (err: Error) => {
+        return err instanceof StreamPayloadTooLargeError && err.message.includes("250");
+      }
+    );
+
+    // Verify stream halted and did not pull unbounded chunks beyond limit
+    assert.ok(chunksPulled <= 4, "Stream must halt immediately and avoid unbounded chunk consumption");
   });
 
   // 6. RAG Prompt Injection Neutralization

@@ -27,11 +27,57 @@ import { loadProjectsRegistry } from "@/engine/projectManager";
 import { atomicWriteFileSync, appendAuditAction } from "@/engine/storage";
 import { ingestDocument } from "@/server/ragService";
 
+export class StreamPayloadTooLargeError extends Error {
+  constructor(limitBytes: number) {
+    super(`Payload Too Large: Total upload size exceeded maximum limit of ${limitBytes} bytes.`);
+    this.name = "StreamPayloadTooLargeError";
+  }
+}
+
+/**
+ * Bounds an incoming Web ReadableStream so that if cumulative wire bytes exceed maxBytes,
+ * it immediately halts enqueuing and errors the stream. This prevents the server from buffering
+ * unbounded payloads into heap memory during multipart or JSON parsing when Content-Length is missing or chunked.
+ */
+export function createBoundedBodyStream(
+  sourceStream: ReadableStream<Uint8Array>,
+  maxBytes: number
+): ReadableStream<Uint8Array> {
+  let bytesRead = 0;
+  const reader = sourceStream.getReader();
+  let exceeded = false;
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (exceeded) return;
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        bytesRead += (value?.byteLength || value?.length || 0);
+        if (bytesRead > maxBytes) {
+          exceeded = true;
+          controller.error(new StreamPayloadTooLargeError(maxBytes));
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason).catch(() => {});
+    },
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const maxTotalAllowed = getResourceLimits().maxTotalUploadSizeBytes;
 
-    // Pre-flight check: Reject requests with Content-Length exceeding maximum total limit before processing
+    // Pre-flight check: Fast-fail if Content-Length header is present and exceeds maximum total limit
     const contentLengthHeader = request.headers.get("content-length");
     if (contentLengthHeader) {
       const contentLength = parseInt(contentLengthHeader, 10);
@@ -46,6 +92,22 @@ export async function POST(request: Request) {
     }
 
     const contentType = request.headers.get("content-type") || "";
+    const isMultipart = contentType.includes("multipart/form-data");
+    // Allow a 64 KB envelope buffer for multipart boundary strings, headers, and form field metadata
+    const maxStreamBytes = isMultipart ? maxTotalAllowed + 64 * 1024 : maxTotalAllowed;
+
+    // Wrap request stream with bounded stream to enforce memory safety before framework buffering
+    let effectiveRequest = request;
+    if (request.body && !request.bodyUsed) {
+      const boundedStream = createBoundedBodyStream(request.body, maxStreamBytes);
+      effectiveRequest = new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: boundedStream,
+        // @ts-expect-error duplex is required in Node fetch when body is a ReadableStream
+        duplex: "half",
+      });
+    }
 
     const uploadedFiles: {
       name: string;
@@ -56,8 +118,26 @@ export async function POST(request: Request) {
     let targetProjectId: string | undefined;
     let ingestToRAG = true;
 
-    if (contentType.includes("multipart/form-data")) {
-      const formData = await request.formData();
+    if (isMultipart) {
+      let formData: FormData;
+      try {
+        formData = await effectiveRequest.formData();
+      } catch (formErr: unknown) {
+        if (
+          formErr instanceof StreamPayloadTooLargeError ||
+          (formErr instanceof Error && formErr.name === "StreamPayloadTooLargeError") ||
+          (formErr instanceof Error && formErr.message.includes("Payload Too Large"))
+        ) {
+          return NextResponse.json(
+            {
+              error: formErr instanceof Error ? formErr.message : `Payload Too Large: Total upload size exceeded maximum limit of ${maxTotalAllowed} bytes.`,
+            },
+            { status: 413 }
+          );
+        }
+        throw formErr;
+      }
+
       overwrite = formData.get("overwrite") === "true";
       const projId = formData.get("projectId");
       if (typeof projId === "string" && projId.trim()) {
@@ -106,7 +186,24 @@ export async function POST(request: Request) {
       }
     } else {
       // JSON payload support
-      const body = await request.json().catch(() => ({}));
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await effectiveRequest.json()) as Record<string, unknown>;
+      } catch (jsonErr: unknown) {
+        if (
+          jsonErr instanceof StreamPayloadTooLargeError ||
+          (jsonErr instanceof Error && jsonErr.name === "StreamPayloadTooLargeError") ||
+          (jsonErr instanceof Error && jsonErr.message.includes("Payload Too Large"))
+        ) {
+          return NextResponse.json(
+            {
+              error: jsonErr instanceof Error ? jsonErr.message : `Payload Too Large: Total upload size exceeded maximum limit of ${maxTotalAllowed} bytes.`,
+            },
+            { status: 413 }
+          );
+        }
+        body = {};
+      }
       overwrite = Boolean(body.overwrite);
       if (typeof body.projectId === "string" && body.projectId.trim()) {
         targetProjectId = body.projectId.trim();
@@ -302,6 +399,13 @@ export async function POST(request: Request) {
       workspaceFiles: updatedFiles,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof StreamPayloadTooLargeError ||
+      (error instanceof Error && error.name === "StreamPayloadTooLargeError") ||
+      (error instanceof Error && error.message.includes("Payload Too Large"))
+    ) {
+      return NextResponse.json({ error: (error as Error).message }, { status: 413 });
+    }
     if (error instanceof SecurityError || error instanceof FileTooLargeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
