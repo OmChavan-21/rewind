@@ -1,0 +1,8 @@
+{
+  "agentName": "NebiusNvidiaRecoveryBot",
+  "version": "1.1.0",
+  "environment": "sandbox-demo",
+  "maxRetryAttempts": 4,
+  "permittedTools": ["code_analysis", "diff_verifier", "syntax_validator", "snapshot_engine"],
+  "steps": [{"stepId": "01_analyze", "action": "code_analysis"}]
+}

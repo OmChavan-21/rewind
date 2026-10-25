@@ -1,0 +1,12 @@
+{
+  "memoryLimitMb": 512,
+  "timeoutSeconds": 30,
+  "telemetry": {
+    "enabled": true,
+    "logLevel": "info"
+  },
+  "recoveryPolicy": {
+    "autoRollbackOnFailure": true,
+    "maxSnapshotHistory": 25
+  }
+}
