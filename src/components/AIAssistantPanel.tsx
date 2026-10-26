@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Sparkles,
   Bot,
@@ -12,6 +12,10 @@ import {
   FileCode,
   Undo2,
   Key,
+  Zap,
+  Cpu,
+  Coins,
+  Clock,
 } from "lucide-react";
 import type {
   AIStatus,
@@ -21,6 +25,7 @@ import type {
 
 interface AIAssistantPanelProps {
   aiStatus: AIStatus | null;
+  projectId?: string;
   onRefreshStatus: () => Promise<void>;
   onProposalApplied: () => Promise<void>;
   onRestoreSnapshot: (snapshotId: string) => Promise<void>;
@@ -32,17 +37,123 @@ interface ProposalErrorDetails {
   suggestion?: string;
 }
 
+interface AvailableModelItem {
+  id: string;
+  name: string;
+  tier: string;
+  capabilities?: {
+    codeGeneration: number;
+    instructionFollowing: number;
+    securityAwareness: number;
+    maxContextTokens: number;
+    reasoningSupport: boolean;
+  };
+  pricing?: {
+    isVerified: boolean;
+    costStatus: string;
+    promptTokenCostUSD: number;
+    completionTokenCostUSD: number;
+    source?: string;
+  } | null;
+}
+
+const FALLBACK_NVIDIA_MODELS: AvailableModelItem[] = [
+  {
+    id: "nvidia/nemotron-3.5-lightning-30b-a3b",
+    name: "Nemotron 3.5 Lightning (30B)",
+    tier: "economy",
+    capabilities: {
+      codeGeneration: 7,
+      instructionFollowing: 8,
+      securityAwareness: 6,
+      maxContextTokens: 131072,
+      reasoningSupport: false,
+    },
+    pricing: {
+      isVerified: false,
+      costStatus: "estimated",
+      promptTokenCostUSD: 0.0000002,
+      completionTokenCostUSD: 0.0000002,
+    },
+  },
+  {
+    id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    name: "Nemotron 3 Nano (30B)",
+    tier: "economy",
+    capabilities: {
+      codeGeneration: 6,
+      instructionFollowing: 7,
+      securityAwareness: 5,
+      maxContextTokens: 65536,
+      reasoningSupport: false,
+    },
+    pricing: {
+      isVerified: false,
+      costStatus: "estimated",
+      promptTokenCostUSD: 0.00000015,
+      completionTokenCostUSD: 0.00000015,
+    },
+  },
+  {
+    id: "nvidia/nemotron-3-super-120b-a12b",
+    name: "Nemotron 3 Super (120B)",
+    tier: "reasoning",
+    capabilities: {
+      codeGeneration: 9,
+      instructionFollowing: 9,
+      securityAwareness: 9,
+      maxContextTokens: 131072,
+      reasoningSupport: true,
+    },
+    pricing: {
+      isVerified: false,
+      costStatus: "estimated",
+      promptTokenCostUSD: 0.0000008,
+      completionTokenCostUSD: 0.0000008,
+    },
+  },
+  {
+    id: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+    name: "Llama 3.1 Nemotron (70B)",
+    tier: "standard",
+    capabilities: {
+      codeGeneration: 8,
+      instructionFollowing: 8,
+      securityAwareness: 8,
+      maxContextTokens: 131072,
+      reasoningSupport: false,
+    },
+    pricing: {
+      isVerified: false,
+      costStatus: "estimated",
+      promptTokenCostUSD: 0.0000005,
+      completionTokenCostUSD: 0.0000005,
+    },
+  },
+];
+
 export function AIAssistantPanel({
   aiStatus,
+  projectId = "demo-workspace",
   onRefreshStatus,
   onProposalApplied,
   onRestoreSnapshot,
 }: AIAssistantPanelProps) {
   const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<"auto" | "manual">("auto");
+  const [selectedModel, setSelectedModel] = useState<string>("nvidia/nemotron-3.5-lightning-30b-a3b");
+  const [availableModels, setAvailableModels] = useState<AvailableModelItem[]>(FALLBACK_NVIDIA_MODELS);
+  const [creditAllowance, setCreditAllowance] = useState<{
+    totalAllowance: number;
+    remainingCredits: number;
+    usedCredits: number;
+  } | null>(null);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [proposal, setProposal] = useState<AIChangeProposal | null>(null);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<ProposalErrorDetails | null>(null);
+  const [isBudgetExceeded, setIsBudgetExceeded] = useState(false);
 
   const [isApplying, setIsApplying] = useState(false);
   const [applyResult, setApplyResult] = useState<ApplyProposalResult | null>(null);
@@ -54,6 +165,35 @@ export function AIAssistantPanel({
     aiStatus?.provider === "nvidia"
       ? "NVIDIA API (integrate.api.nvidia.com)"
       : "Nebius Token Factory";
+
+  // Fetch initial models & credit allowance from /api/ai/status
+  useEffect(() => {
+    let isMounted = true;
+    async function loadStatusDetails() {
+      try {
+        const res = await fetch(`/api/ai/status?projectId=${encodeURIComponent(projectId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+        if (Array.isArray(data.availableModels) && data.availableModels.length > 0) {
+          setAvailableModels(data.availableModels);
+        }
+        if (data.creditAllowance) {
+          setCreditAllowance({
+            totalAllowance: data.creditAllowance.totalAllowance,
+            remainingCredits: data.creditAllowance.remainingCredits,
+            usedCredits: data.creditAllowance.usedCredits,
+          });
+        }
+      } catch {
+        // Fallbacks remain active
+      }
+    }
+    loadStatusDetails();
+    return () => {
+      isMounted = false;
+    };
+  }, [projectId]);
 
   // Suggested demo prompts for the hackathon
   const demoPrompts = [
@@ -77,6 +217,7 @@ export function AIAssistantPanel({
     setIsGenerating(true);
     setGenerationError(null);
     setErrorDetails(null);
+    setIsBudgetExceeded(false);
     setProposal(null);
     setApplyResult(null);
     setApplyError(null);
@@ -85,11 +226,19 @@ export function AIAssistantPanel({
       const res = await fetch("/api/ai/propose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({
+          prompt,
+          mode,
+          selectedModel: mode === "manual" ? selectedModel : undefined,
+          projectId,
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (res.status === 429 || data.budgetExceeded) {
+          setIsBudgetExceeded(true);
+        }
         setErrorDetails({
           message: data.error || "Failed to generate proposal",
           category: data.category,
@@ -99,6 +248,9 @@ export function AIAssistantPanel({
       }
 
       setProposal(data.proposal);
+      if (data.creditAllowance) {
+        setCreditAllowance(data.creditAllowance);
+      }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       setGenerationError(errMsg);
@@ -139,7 +291,7 @@ export function AIAssistantPanel({
 
   return (
     <div className="space-y-6 font-mono">
-      {/* Top Banner: Model Status & Provider Details */}
+      {/* Top Banner: Model Status, Provider Details & Credit Allowance */}
       <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-lg">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-gradient-to-tr from-emerald-500/20 via-cyan-500/20 to-purple-500/20 border border-cyan-500/30 text-cyan-400">
@@ -184,7 +336,7 @@ export function AIAssistantPanel({
               )}
             </div>
             <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-              Model: <code className="text-cyan-300 font-semibold">{aiStatus?.model || "nvidia/nemotron-3.5-lightning-30b-a3b"}</code>
+              Active Provider: <code className="text-cyan-300 font-semibold">{aiStatus?.provider || "nvidia"}</code> (developer eval tier)
             </p>
             {aiStatus?.message && !isConnected && (
               <p className="text-[10px] text-rose-300 font-sans mt-0.5">
@@ -194,12 +346,28 @@ export function AIAssistantPanel({
           </div>
         </div>
 
-        <button
-          onClick={onRefreshStatus}
-          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700 transition shrink-0"
-        >
-          Check API Status
-        </button>
+        {/* Free Allowance Badge & Action */}
+        <div className="flex items-center gap-3 self-end md:self-auto flex-wrap">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
+            <Coins className="w-4 h-4 text-amber-400" />
+            <div className="flex flex-col">
+              <span className="text-[10px] text-slate-400 font-sans leading-none">Free Allowance:</span>
+              <span className="font-bold font-mono">
+                <span className={creditAllowance && creditAllowance.remainingCredits <= 5 ? "text-rose-400" : "text-emerald-400"}>
+                  {creditAllowance ? creditAllowance.remainingCredits : 100}
+                </span>
+                <span className="text-slate-500 font-normal"> / {creditAllowance ? creditAllowance.totalAllowance : 100} credits</span>
+              </span>
+            </div>
+          </div>
+
+          <button
+            onClick={onRefreshStatus}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700 transition shrink-0"
+          >
+            Check API Status
+          </button>
+        </div>
       </div>
 
       {/* Unconfigured Setup Instructions Banner */}
@@ -208,18 +376,18 @@ export function AIAssistantPanel({
           <div className="flex items-center gap-2 font-mono">
             <Key className="w-4 h-4 text-amber-400" />
             <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-              Setup Guide: Connect Nebius Token Factory
+              Setup Guide: Connect NVIDIA API
             </h3>
           </div>
           <p className="text-xs text-slate-300 leading-relaxed">
-            Rewind uses real open-weights models served through Nebius Token Factory. To enable autonomous AI change proposals, configure your credentials in <code className="text-cyan-300 font-mono">.env.local</code>:
+            Rewind uses real open-weights models served through NVIDIA API. To enable autonomous AI change proposals, configure your credentials in <code className="text-cyan-300 font-mono">.env.local</code>:
           </p>
 
           <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 space-y-1">
-            <p className="text-slate-400"># In C:\Rewind\rewind\.env.local (ignored by git):</p>
-            <p className="text-emerald-400">NEBIUS_API_KEY=&quot;your_nebius_token_factory_api_key&quot;</p>
-            <p className="text-slate-400">NEBIUS_MODEL=&quot;nvidia/Llama-3.1-Nemotron-70B-Instruct-HF&quot;</p>
-            <p className="text-slate-400">NEBIUS_BASE_URL=&quot;https://api.tokenfactory.nebius.com/v1&quot;</p>
+            <p className="text-slate-400"># In .env.local (server-side only, ignored by git):</p>
+            <p className="text-emerald-400">NVIDIA_API_KEY=&quot;nvapi-your_api_key&quot;</p>
+            <p className="text-slate-400">NVIDIA_MODEL=&quot;nvidia/nemotron-3.5-lightning-30b-a3b&quot;</p>
+            <p className="text-slate-400">NVIDIA_BASE_URL=&quot;https://integrate.api.nvidia.com/v1&quot;</p>
           </div>
 
           <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
@@ -231,17 +399,113 @@ export function AIAssistantPanel({
 
       {/* Main Proposal Generator Form */}
       <div className="p-5 rounded-xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">
-        <div className="flex items-center justify-between">
+        {/* Router Mode Switch & Title */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-cyan-400" />
             <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
               Describe Requested Change
             </h3>
           </div>
-          <span className="text-[10px] text-slate-400 font-mono">
-            AI Proposes → User Inspects → Explicit Approval → Trusted Execution
-          </span>
+
+          {/* Mode Selector Tabs */}
+          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+            <button
+              type="button"
+              onClick={() => setMode("auto")}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-bold transition ${
+                mode === "auto"
+                  ? "bg-cyan-500 text-slate-950 shadow"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>Auto Router</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("manual")}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-mono font-bold transition ${
+                mode === "manual"
+                  ? "bg-cyan-500 text-slate-950 shadow"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Cpu className="w-3.5 h-3.5" />
+              <span>Manual Model</span>
+            </button>
+          </div>
         </div>
+
+        {/* Mode Explanation & Model Selection Controls */}
+        {mode === "auto" ? (
+          <div className="p-3 rounded-lg bg-slate-950/80 border border-cyan-900/40 text-xs text-slate-300 flex items-start gap-2.5">
+            <Zap className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-bold text-cyan-300 font-mono text-[11px]">
+                Deterministic Auto Router Active:
+              </span>
+              <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
+                Classifies task complexity and risk deterministically. Automatically selects the least expensive suitable model in the active provider catalog, scaling up to high-capability reasoning models for security-critical tasks.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-bold text-slate-300 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+                Select Provider Model:
+              </label>
+              <span className="text-[10px] text-slate-400 font-mono">
+                Provider: {aiStatus?.provider || "nvidia"}
+              </span>
+            </div>
+
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="w-full p-2.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 text-xs font-mono focus:outline-none focus:border-cyan-500"
+            >
+              {availableModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} [{m.tier.toUpperCase()}] — {m.id}
+                </option>
+              ))}
+            </select>
+
+            {/* Display capability pill for chosen model */}
+            {(() => {
+              const current = availableModels.find((m) => m.id === selectedModel);
+              if (!current || !current.capabilities) return null;
+              return (
+                <div className="flex items-center gap-3 text-[10px] text-slate-400 font-mono flex-wrap">
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                    Tier: <strong className="text-cyan-300 uppercase">{current.tier}</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                    Code Gen: <strong className="text-slate-200">{current.capabilities.codeGeneration}/10</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                    Security: <strong className="text-slate-200">{current.capabilities.securityAwareness}/10</strong>
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800">
+                    Context: <strong className="text-slate-200">{(current.capabilities.maxContextTokens / 1024).toFixed(0)}k</strong>
+                  </span>
+                  {current.capabilities.reasoningSupport && (
+                    <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 font-bold">
+                      Reasoning Enabled
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+
+            <p className="text-[10px] text-slate-400 font-sans">
+              Auto Router honors your explicit selection. If the task risk exceeds model capabilities, clear warnings will be reported without blocking your execution choice.
+            </p>
+          </div>
+        )}
 
         {/* Suggested Prompts */}
         <div className="space-y-1.5">
@@ -278,23 +542,38 @@ export function AIAssistantPanel({
           />
         </div>
 
-        {/* Action Button */}
-        <div className="flex items-center justify-between">
+        {/* Action Button & Security Notice */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-[11px] text-slate-400 font-sans">
             AI changes are strictly isolated to allowlisted files with automatic pre-recovery snapshots.
           </div>
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || !prompt.trim()}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-slate-950 text-xs font-bold shadow-md shadow-cyan-500/20 transition disabled:opacity-50"
+            disabled={isGenerating || !prompt.trim() || isBudgetExceeded}
+            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-slate-950 text-xs font-bold shadow-md shadow-cyan-500/20 transition disabled:opacity-50 shrink-0"
           >
             <Send className="w-3.5 h-3.5" />
-            <span>{isGenerating ? "Consulting NVIDIA Model..." : "Generate AI Proposal"}</span>
+            <span>{isGenerating ? "Routing & Consulting Model..." : "Generate AI Proposal"}</span>
           </button>
         </div>
 
+        {/* Budget Exceeded Alert */}
+        {isBudgetExceeded && (
+          <div className="p-3.5 rounded-lg bg-amber-950/50 border border-amber-800 text-xs text-amber-200 flex items-start gap-2.5 animate-in fade-in">
+            <Coins className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <span className="font-bold text-amber-300 font-mono uppercase text-[11px] block">
+                Free Credit Allowance Exhausted
+              </span>
+              <p className="text-[11px] text-amber-200 font-sans leading-relaxed">
+                This project has used its allocated free testing allowance. To protect against unbounded usage during evaluation, requests are blocked. Allowance resets per project workspace.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Generation Error */}
-        {generationError && (
+        {generationError && !isBudgetExceeded && (
           <div className="p-3.5 rounded-lg bg-rose-950/40 border border-rose-800 text-xs text-rose-300 flex items-start gap-2.5">
             <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div className="space-y-1.5 flex-1">
@@ -330,7 +609,7 @@ export function AIAssistantPanel({
                 Proposal Preview ({proposal.id})
               </h3>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
                 Model: {proposal.model}
               </span>
@@ -345,6 +624,125 @@ export function AIAssistantPanel({
               </span>
             </div>
           </div>
+
+          {/* Routing Decision & Task Classification Metadata */}
+          {proposal.routingMeta && (
+            <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 uppercase font-bold">
+                    {proposal.routingMeta.routing.mode === "auto" ? "⚡ Auto Routed" : "⚙️ Manual Mode"}
+                  </span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-800">
+                    Complexity: <strong className="text-cyan-300">{proposal.routingMeta.routing.taskClassification.complexity}</strong>
+                  </span>
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded border uppercase font-bold ${
+                      proposal.routingMeta.routing.taskClassification.riskLevel === "high"
+                        ? "bg-rose-950 text-rose-400 border-rose-800"
+                        : proposal.routingMeta.routing.taskClassification.riskLevel === "medium"
+                        ? "bg-amber-950 text-amber-400 border-amber-800"
+                        : "bg-emerald-950 text-emerald-400 border-emerald-800"
+                    }`}
+                  >
+                    Risk: {proposal.routingMeta.routing.taskClassification.riskLevel}
+                  </span>
+                </div>
+
+                {proposal.routingMeta.routing.taskClassification.targetPaths.length > 0 && (
+                  <span className="text-[10px] text-slate-400">
+                    Targets: <code className="text-slate-300">{proposal.routingMeta.routing.taskClassification.targetPaths.join(", ")}</code>
+                  </span>
+                )}
+              </div>
+
+              {/* Routing Rationale */}
+              <div className="p-2 rounded bg-slate-900/60 border border-slate-850 text-[11px] text-slate-300 font-sans">
+                <span className="font-bold font-mono text-[10px] uppercase text-cyan-400 mr-1.5">
+                  Routing Rationale:
+                </span>
+                {proposal.routingMeta.routing.routingReason}
+              </div>
+
+              {/* Manual Selection Warnings */}
+              {proposal.routingMeta.routing.warnings && proposal.routingMeta.routing.warnings.length > 0 && (
+                <div className="p-2.5 rounded bg-amber-950/40 border border-amber-800/80 text-[11px] text-amber-300 space-y-1">
+                  <div className="font-bold text-[10px] uppercase text-amber-400 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Capability Warning:
+                  </div>
+                  {proposal.routingMeta.routing.warnings.map((w, idx) => (
+                    <p key={idx} className="font-sans leading-relaxed">{w}</p>
+                  ))}
+                </div>
+              )}
+
+              {/* Dual Independent Accounting Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-slate-850">
+                {/* 1. AI Provider Cost */}
+                <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Provider API Cost</span>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                        proposal.routingMeta.costMetrics.costStatus === "confirmed"
+                          ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                          : proposal.routingMeta.costMetrics.costStatus === "estimated"
+                          ? "bg-amber-950 text-amber-400 border border-amber-800"
+                          : "bg-slate-800 text-slate-400 border border-slate-700"
+                      }`}
+                    >
+                      {proposal.routingMeta.costMetrics.costStatus}
+                    </span>
+                  </div>
+                  <div className="text-sm font-bold text-white">
+                    {proposal.routingMeta.costMetrics.providerCostUSD !== null
+                      ? `$${proposal.routingMeta.costMetrics.providerCostUSD.toFixed(6)} USD`
+                      : "Unavailable"}
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-sans">
+                    {proposal.routingMeta.costMetrics.costStatus === "estimated"
+                      ? "NVIDIA developer eval rate — not commercial charge"
+                      : "Tracked from provider usage metrics"}
+                  </div>
+                </div>
+
+                {/* 2. Rewind Credits (Internal Allowance) */}
+                <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                    <span>Rewind Credits</span>
+                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-400 border border-cyan-800 font-bold uppercase">
+                      Free Allowance
+                    </span>
+                  </div>
+                  <div className="text-sm font-bold text-emerald-400">
+                    -{proposal.routingMeta.accounting.creditsCharged} Credits
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-sans">
+                    {proposal.routingMeta.creditAllowance
+                      ? `${proposal.routingMeta.creditAllowance.remainingCredits} credits remaining`
+                      : "Single deduction per completed task"}
+                  </div>
+                </div>
+
+                {/* 3. Latency & Token Usage */}
+                <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-cyan-400" />
+                    <span>Execution Metrics</span>
+                  </div>
+                  <div className="text-sm font-bold text-cyan-300">
+                    {proposal.routingMeta.latencyMs} ms
+                  </div>
+                  <div className="text-[10px] text-slate-400 font-sans">
+                    {proposal.routingMeta.usage
+                      ? `${proposal.routingMeta.usage.promptTokens} in / ${proposal.routingMeta.usage.completionTokens} out (${proposal.routingMeta.usage.totalTokens} total)`
+                      : "Token metrics not returned by provider"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Proposal Summary & Reasoning */}
           <div className="space-y-2 font-sans text-xs">

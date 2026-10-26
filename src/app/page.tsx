@@ -645,9 +645,10 @@ export default function RewindDashboard() {
             <div className="space-y-6 animate-in fade-in duration-150">
               <AIAssistantPanel
                 aiStatus={aiStatus}
+                projectId={activeProjectId}
                 onRefreshStatus={async () => {
                   try {
-                    const res = await fetch("/api/ai/status");
+                    const res = await fetch(`/api/ai/status?projectId=${encodeURIComponent(activeProjectId)}`);
                     const data = await res.json();
                     if (data.status) setAiStatus(data.status);
                   } catch {

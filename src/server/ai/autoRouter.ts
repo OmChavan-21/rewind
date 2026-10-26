@@ -10,6 +10,7 @@ import type {
   ModelMetadata,
   TaskComplexity,
   ModelTier,
+  TaskClassification,
 } from "../../types/router";
 import { classifyTask } from "./taskClassifier";
 import {
@@ -66,7 +67,9 @@ const TIER_COST_RANK: Record<ModelTier, number> = {
 export interface RouterOptions {
   mode?: "auto" | "manual";
   manualModelId?: string;
+  selectedModel?: string;
   manualProvider?: AIProvider;
+  provider?: AIProvider;
 }
 
 /**
@@ -111,13 +114,14 @@ export function estimateComparativeCost(
  * Deterministically routes an incoming task to the least expensive suitable model.
  */
 export function routeTask(
-  userPrompt: string,
+  userPromptOrClassification: string | TaskClassification,
   contextFiles: { path: string; content: string }[] = [],
   options?: RouterOptions
 ): RoutingDecision {
   const activeProvider = getActiveProvider();
-  const requestedProvider = options?.manualProvider || activeProvider;
+  const requestedProvider = options?.manualProvider || options?.provider || activeProvider;
   const warnings: string[] = [];
+  const requestedModelId = options?.manualModelId || options?.selectedModel;
 
   // Enforce provider strategy: Never silently switch to an unconfigured provider
   if (requestedProvider !== activeProvider) {
@@ -128,7 +132,7 @@ export function routeTask(
         {
           statusCode: 401,
           provider: "nebius",
-          model: options?.manualModelId || "unknown",
+          model: requestedModelId || "unknown",
           suggestion: "Use NVIDIA provider during development and testing.",
         }
       );
@@ -138,13 +142,18 @@ export function routeTask(
   const provider = requestedProvider;
   const mode = options?.mode || "auto";
 
-  // Step 1: Classify task deterministically
-  const taskClassification = classifyTask(userPrompt, contextFiles);
+  // Step 1: Classify task deterministically (or reuse passed classification)
+  const taskClassification: TaskClassification =
+    typeof userPromptOrClassification === "object" &&
+    userPromptOrClassification !== null &&
+    "complexity" in userPromptOrClassification
+      ? userPromptOrClassification
+      : classifyTask(userPromptOrClassification, contextFiles);
   const threshold = COMPLEXITY_THRESHOLDS[taskClassification.complexity];
 
   // Step 2: Handle Manual Selection Mode
-  if (mode === "manual" && options?.manualModelId) {
-    const selectedModel = getModelMetadata(options.manualModelId, provider);
+  if (mode === "manual" && requestedModelId) {
+    const selectedModel = getModelMetadata(requestedModelId, provider);
 
     // Validate capability against threshold and warn if under-dimensioned
     if (!meetsCapabilityThreshold(selectedModel, threshold)) {

@@ -132,4 +132,9 @@ export interface AIProposalRoutingMeta {
     completionTokens: number;
     totalTokens: number;
   };
+  creditAllowance?: {
+    totalAllowance: number;
+    remainingCredits: number;
+    usedCredits: number;
+  };
 }
