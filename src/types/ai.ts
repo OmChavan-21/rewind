@@ -4,6 +4,9 @@
  */
 
 import type { ValidationResult, RecoveryResult } from "./recovery";
+import type { AIProposalRoutingMeta } from "./router";
+
+export type AIProvider = "nvidia" | "nebius";
 
 export type AIConnectionState = "unconfigured" | "configured" | "connected" | "failed";
 
@@ -23,7 +26,7 @@ export interface AIStatus {
   baseUrl: string;
   message?: string;
   availableModels?: string[];
-  provider?: "nvidia" | "nebius";
+  provider?: AIProvider;
   endpointReachable?: boolean;
   credentialsAccepted?: boolean;
   modelListed?: boolean;
@@ -51,6 +54,8 @@ export interface AIChangeProposal {
   potentialRisks: string;
   expectedValidationResult: "pass" | "fail" | "warn";
   status: "pending_approval" | "approved" | "applied" | "rejected";
+  /** Optional Auto Router decision and dual-accounting metrics */
+  routingMeta?: AIProposalRoutingMeta;
 }
 
 export interface AppliedFileResult {
@@ -70,3 +75,5 @@ export interface ApplyProposalResult {
   recoveryResult?: RecoveryResult;
   message: string;
 }
+
+export * from "./router";

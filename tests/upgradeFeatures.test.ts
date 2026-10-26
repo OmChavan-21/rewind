@@ -6,6 +6,7 @@ import os from "node:os";
 
 import {
   validateUploadLimits,
+  computeDynamicLimits,
   getMemoryMetrics,
 } from "../src/security/limits";
 import {
@@ -115,8 +116,16 @@ describe("Rewind Upgrade Features Test Suite", () => {
         { name: "doc3.pdf", size: 9 * 1024 * 1024 },
       ];
 
+      const lowPressureLimits = computeDynamicLimits(0, {
+        heapUsedBytes: 50 * 1024 * 1024,
+        heapLimitBytes: 1024 * 1024 * 1024,
+        systemTotalBytes: 16 * 1024 * 1024 * 1024,
+        systemFreeBytes: 12 * 1024 * 1024 * 1024,
+        metricsAvailable: true,
+      });
+
       assert.throws(
-        () => validateUploadLimits(files, 0),
+        () => validateUploadLimits(files, 0, lowPressureLimits),
         (err: unknown) => {
           assert(err instanceof FileTooLargeError);
           assert(err.message.includes("Total batch upload size"));
