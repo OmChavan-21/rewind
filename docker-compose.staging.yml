@@ -1,0 +1,45 @@
+# ==============================================================================
+# Rewind — Private Staging Docker Compose
+# Deployment access: Strictly bound to 127.0.0.1 (private loopback)
+# Snapshot & workspace storage: Persistent on host filesystem
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  rewind-staging:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rewind-private-staging
+    restart: unless-stopped
+    ports:
+      # CRITICAL: Strictly bind to 127.0.0.1 loopback to prevent exposure to public interfaces
+      - "127.0.0.1:3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=127.0.0.1
+      - AI_PROVIDER=nvidia
+      # Server-side provider keys are injected from .env.staging or host environment
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+      - NVIDIA_BASE_URL=${NVIDIA_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      - NVIDIA_MODEL=${NVIDIA_MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
+      # Nebius remains inactive in staging
+      - NEBIUS_API_KEY=
+      # Persistent storage paths
+      - REWIND_WORKSPACE_DIR=/app/demo-workspace
+      - REWIND_STORE_DIR=/app/.rewind_store
+      - REWIND_FREE_CREDIT_ALLOWANCE=100
+    volumes:
+      # Persistent host volume mounts guaranteeing survival across container restarts
+      - ./.rewind_store:/app/.rewind_store
+      - ./demo-workspace:/app/demo-workspace
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/api/system/limits"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
