@@ -92,6 +92,30 @@ export function validateProjectId(projectId: string): void {
 }
 
 /**
+ * Strictly validates chat session ID format to prevent directory traversal and filesystem escapes.
+ */
+export function validateSessionId(sessionId: string): void {
+  if (typeof sessionId !== "string" || !sessionId.trim()) {
+    throw new SecurityError("Session ID must be a non-empty string.");
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId) || sessionId.includes("..")) {
+    throw new SecurityError(`Invalid session ID format: '${sessionId}'`);
+  }
+}
+
+/**
+ * Strictly validates memory record ID format to prevent directory traversal and filesystem escapes.
+ */
+export function validateMemoryId(memoryId: string): void {
+  if (typeof memoryId !== "string" || !memoryId.trim()) {
+    throw new SecurityError("Memory ID must be a non-empty string.");
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(memoryId) || memoryId.includes("..")) {
+    throw new SecurityError(`Invalid memory ID format: '${memoryId}'`);
+  }
+}
+
+/**
  * Sanitizes and normalizes relative path.
  * Rejects path traversal, null bytes, control characters, alternate data streams (':'), absolute paths, and drive letters.
  */

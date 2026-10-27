@@ -80,7 +80,7 @@ export function Sidebar({
     },
     {
       id: "ai" as const,
-      label: "AI Proposals (NVIDIA)",
+      label: "Project Chat & AI",
       icon: Bot,
       badge: aiConnected ? "Live" : "Setup",
       badgeColor: aiConnected

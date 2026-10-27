@@ -20,6 +20,9 @@ import type { AIProposalRoutingMeta } from "@/types/router";
 import { runSelfRepairLoop } from "@/server/ai/selfRepairEngine";
 import { verifyCandidatePatchInSandbox } from "@/engine/patchSandbox";
 import type { SelfRepairResult } from "@/types/ai";
+import { assembleDeveloperContext } from "@/server/ai/contextAssembler";
+import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
+import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
 
 export async function POST(request: Request) {
   let reservationId: string | undefined;
@@ -64,6 +67,42 @@ export async function POST(request: Request) {
       totalBytes += byteLen;
     }
 
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : undefined;
+    let recordedUserMsgId: string | undefined;
+
+    // If session ID is provided, verify session exists and record user message
+    if (sessionId) {
+      try {
+        const session = getChatSession(activeProjectId, sessionId, storeRoot);
+        if (session) {
+          const userMsg = addChatMessage(activeProjectId, sessionId, {
+            role: "user",
+            content: prompt,
+          }, storeRoot);
+          recordedUserMsgId = userMsg.id;
+
+          // Distill any core intentions or decisions into the project memory membrane
+          extractAndPersistMemories({
+            projectId: activeProjectId,
+            sessionId,
+            messageId: userMsg.id,
+            userPrompt: prompt,
+            storeRoot,
+          });
+        }
+      } catch {
+        // Non-destructive: chat logging failure does not block proposal generation
+      }
+    }
+
+    // Retrieve active Project Memories, Global Preferences, Recent Chat, & Targeted RAG Chunks
+    const assembledDevContext = await assembleDeveloperContext({
+      projectId: activeProjectId,
+      sessionId,
+      userPrompt: prompt,
+      storeRoot,
+    });
+
     // 1. Deterministic Task Classification (Zero LLM overhead)
     const classification = classifyTask(prompt, contextFiles);
 
@@ -95,12 +134,13 @@ export async function POST(request: Request) {
     );
     reservationId = reservation.reservationId;
 
-    // 4. Model Proposal Generation via active provider (NVIDIA)
+    // 4. Model Proposal Generation via active provider (NVIDIA) with augmented developer context
     let result;
     try {
       result = await generateChangeProposalWithMeta(prompt, contextFiles, {
         model: decision.selectedModel.id,
         provider: decision.selectedProvider,
+        developerContext: assembledDevContext.augmentedSystemPromptText,
       });
     } catch (genErr) {
       // Provider error, timeout, or network issue: release reservation so user is NOT charged!
@@ -179,10 +219,41 @@ export async function POST(request: Request) {
 
     result.proposal.routingMeta = routingMeta;
 
+    // Record assistant proposal turn in session if active
+    if (sessionId) {
+      try {
+        addChatMessage(activeProjectId, sessionId, {
+          role: "assistant",
+          content: result.proposal.summary,
+          reasoning: result.proposal.reasoning,
+          proposalId: result.proposal.id,
+          tokenUsage: result.usage,
+        }, storeRoot);
+
+        if (recordedUserMsgId) {
+          extractAndPersistMemories({
+            projectId: activeProjectId,
+            sessionId,
+            messageId: recordedUserMsgId,
+            userPrompt: prompt,
+            assistantResponse: `${result.proposal.summary}. ${result.proposal.reasoning}`,
+            storeRoot,
+          });
+        }
+      } catch {
+        // Non-destructive
+      }
+    }
+
     return NextResponse.json({
       proposal: result.proposal,
       routingMeta,
       creditAllowance: routingMeta.creditAllowance,
+      developerContext: {
+        memoriesCount: assembledDevContext.retrievedMemoriesCount,
+        historyCount: assembledDevContext.retrievedHistoryCount,
+        ragChunksCount: assembledDevContext.retrievedRagChunksCount,
+      },
       verification: repairOutcome
         ? {
             status: repairOutcome.status,

@@ -16,12 +16,20 @@ import {
   Cpu,
   Coins,
   Clock,
+  MessageSquare,
+  Plus,
+  Brain,
+  Layers,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import type {
   AIStatus,
   AIChangeProposal,
   ApplyProposalResult,
 } from "@/types/ai";
+import type { ChatSession, ChatMessage } from "@/types/chat";
+import type { ProjectMemory } from "@/types/memory";
 
 interface AIAssistantPanelProps {
   aiStatus: AIStatus | null;
@@ -195,6 +203,117 @@ export function AIAssistantPanel({
     };
   }, [projectId]);
 
+  // Project-Scoped Chat & Memory Membrane State
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [sessionMessages, setSessionMessages] = useState<ChatMessage[]>([]);
+  const [projectMemories, setProjectMemories] = useState<ProjectMemory[]>([]);
+  const [showMemories, setShowMemories] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
+
+  // Load project-scoped chat sessions and memory membrane
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchProjectChat() {
+      try {
+        const [sessRes, memRes] = await Promise.all([
+          fetch(`/api/chat/sessions?projectId=${encodeURIComponent(projectId)}`),
+          fetch(`/api/projects/${encodeURIComponent(projectId)}/memories`),
+        ]);
+
+        if (sessRes.ok) {
+          const sessData = await sessRes.json();
+          const sessList: ChatSession[] = sessData.sessions || [];
+          if (!isMounted) return;
+          setSessions(sessList);
+          if (sessList.length > 0) {
+            setActiveSessionId((prev) => (sessList.some((s) => s.id === prev) ? prev : sessList[0].id));
+          } else {
+            const createRes = await fetch("/api/chat/sessions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ projectId, title: "Initial Project Chat" }),
+            });
+            if (createRes.ok && isMounted) {
+              const createData = await createRes.json();
+              if (createData.session) {
+                setSessions([createData.session]);
+                setActiveSessionId(createData.session.id);
+              }
+            }
+          }
+        }
+
+        if (memRes.ok && isMounted) {
+          const memData = await memRes.json();
+          setProjectMemories(memData.memories || []);
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+    fetchProjectChat();
+    return () => {
+      isMounted = false;
+    };
+  }, [projectId]);
+
+  // Load messages whenever activeSessionId changes
+  useEffect(() => {
+    let isMounted = true;
+    async function loadMessages() {
+      if (!activeSessionId) {
+        if (isMounted) {
+          setSessionMessages([]);
+        }
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/chat/sessions/${encodeURIComponent(activeSessionId)}?projectId=${encodeURIComponent(projectId)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isMounted) {
+          setSessionMessages(data.messages || []);
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+    loadMessages();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeSessionId, projectId]);
+
+  const handleCreateSession = async () => {
+    setIsCreatingSession(true);
+    try {
+      const res = await fetch("/api/chat/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          title: `Project Chat ${sessions.length + 1}`,
+          routingMode: mode,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to create session");
+      const data = await res.json();
+      if (data.session) {
+        setSessions((prev) => [data.session, ...prev]);
+        setActiveSessionId(data.session.id);
+        setSessionMessages([]);
+        setProposal(null);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsCreatingSession(false);
+    }
+  };
+
   // Suggested demo prompts for the hackathon
   const demoPrompts = [
     {
@@ -231,6 +350,7 @@ export function AIAssistantPanel({
           mode,
           selectedModel: mode === "manual" ? selectedModel : undefined,
           projectId,
+          sessionId: activeSessionId || undefined,
         }),
       });
 
@@ -250,6 +370,30 @@ export function AIAssistantPanel({
       setProposal(data.proposal);
       if (data.creditAllowance) {
         setCreditAllowance(data.creditAllowance);
+      }
+
+      // Reload chat session messages and memory membrane
+      if (activeSessionId) {
+        try {
+          const msgRes = await fetch(
+            `/api/chat/sessions/${encodeURIComponent(activeSessionId)}?projectId=${encodeURIComponent(projectId)}`
+          );
+          if (msgRes.ok) {
+            const msgData = await msgRes.json();
+            setSessionMessages(msgData.messages || []);
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+      try {
+        const memRes = await fetch(`/api/projects/${encodeURIComponent(projectId)}/memories`);
+        if (memRes.ok) {
+          const memData = await memRes.json();
+          setProjectMemories(memData.memories || []);
+        }
+      } catch {
+        // Non-fatal
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -397,6 +541,145 @@ export function AIAssistantPanel({
           </div>
         </div>
       )}
+
+      {/* Project Chat Continuity & Memory Membrane Header */}
+      <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 shadow-lg space-y-3 font-sans">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Active Project & Session Selector */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-950 border border-slate-800 text-xs font-mono">
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-slate-400 text-[10px]">Project:</span>
+              <span className="text-white font-bold">{projectId}</span>
+            </div>
+
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
+              <MessageSquare className="w-3.5 h-3.5 text-slate-400 ml-1.5" />
+              <select
+                value={activeSessionId || ""}
+                onChange={(e) => setActiveSessionId(e.target.value)}
+                className="bg-transparent text-slate-200 text-xs font-mono font-medium focus:outline-none pr-2 py-0.5"
+              >
+                {sessions.map((s) => (
+                  <option key={s.id} value={s.id} className="bg-slate-900 text-slate-200">
+                    {s.title} ({s.messageCount} msgs)
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={handleCreateSession}
+                disabled={isCreatingSession}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-cyan-300 font-mono transition"
+                title="Create New Project Chat Session"
+              >
+                <Plus className="w-3 h-3" />
+                <span>New Session</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Memory Membrane Badge & Drawer Toggle */}
+          <button
+            type="button"
+            onClick={() => setShowMemories((prev) => !prev)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono transition ${
+              showMemories
+                ? "bg-purple-950/80 border-purple-500/50 text-purple-300"
+                : "bg-slate-950 border-slate-800 text-slate-300 hover:border-purple-500/30 hover:text-purple-300"
+            }`}
+          >
+            <Brain className="w-4 h-4 text-purple-400" />
+            <span>Memory Membrane ({projectMemories.length})</span>
+            {showMemories ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+
+        {/* Memory Membrane Drawer */}
+        {showMemories && (
+          <div className="p-3.5 rounded-lg bg-slate-950 border border-purple-900/40 space-y-2.5 font-mono text-xs animate-in fade-in duration-150">
+            <div className="flex items-center justify-between pb-1.5 border-b border-slate-800">
+              <span className="text-[11px] font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Brain className="w-3.5 h-3.5 text-purple-400" />
+                Project Developer Long-Term Memory (Membrane)
+              </span>
+              <span className="text-[10px] text-slate-500 font-sans">
+                Distilled from project chats • Injected into LLM context
+              </span>
+            </div>
+
+            {projectMemories.length === 0 ? (
+              <p className="text-[11px] text-slate-400 font-sans italic py-1">
+                No memories distilled yet. When you chat about project goals, architectural choices, or safety constraints, the engine will automatically distill them into this membrane.
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {projectMemories.map((mem) => (
+                  <div
+                    key={mem.id}
+                    className="p-2 rounded bg-slate-900/80 border border-slate-800/80 flex items-start justify-between gap-2"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`text-[9px] px-1.5 py-0.2 rounded font-bold uppercase ${
+                            mem.category === "technical_constraint"
+                              ? "bg-rose-950 text-rose-300 border border-rose-800"
+                              : mem.category === "architectural_decision"
+                              ? "bg-cyan-950 text-cyan-300 border border-cyan-800"
+                              : mem.category === "project_intent"
+                              ? "bg-purple-950 text-purple-300 border border-purple-800"
+                              : "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                          }`}
+                        >
+                          {mem.category.replace("_", " ")}
+                        </span>
+                        <span className="text-white font-semibold text-[11px]">{mem.title}</span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 font-sans leading-relaxed">{mem.distilledIntent}</p>
+                    </div>
+                    <span className="text-[10px] text-slate-500 shrink-0 font-mono">P{mem.importance}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Existing Session Messages Stream */}
+        {sessionMessages.length > 0 && (
+          <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2 max-h-56 overflow-y-auto">
+            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 font-mono">
+              Session History ({sessionMessages.length} turns)
+            </div>
+            {sessionMessages.map((msg) => (
+              <div
+                key={msg.id}
+                className={`p-2.5 rounded-lg text-xs font-mono space-y-1 ${
+                  msg.role === "user"
+                    ? "bg-slate-900 border border-slate-800 text-slate-200"
+                    : "bg-cyan-950/30 border border-cyan-900/40 text-cyan-200"
+                }`}
+              >
+                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <span className="font-bold uppercase tracking-wider text-slate-300">
+                    {msg.role === "user" ? "User" : "Project Developer (AI)"}
+                  </span>
+                  <span>{new Date(msg.createdAt).toLocaleTimeString()}</span>
+                </div>
+                <p className="font-sans text-[11px] leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                {msg.proposalId && (
+                  <div className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    <span>Generated Proposal: {msg.proposalId.slice(0, 16)}...</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Main Proposal Generator Form */}
       <div className="p-5 rounded-xl bg-slate-900/90 border border-slate-800 shadow-xl space-y-4">

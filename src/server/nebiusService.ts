@@ -373,13 +373,16 @@ export async function generateChangeProposalWithMeta(
     enableThinking?: boolean;
     temperature?: number;
     maxTokens?: number;
+    developerContext?: string;
   }
 ): Promise<ProposalGenerationMeta> {
   const provider = options?.provider || getActiveProvider();
   const client = getProviderClient(provider);
   const model = options?.model || (provider === "nvidia" ? DEFAULT_NVIDIA_MODEL : DEFAULT_NEBIUS_MODEL);
 
-  const systemPrompt = `You are Rewind AI, a software reliability assistant.
+  const developerContextBlock = options?.developerContext ? `\n\n${options.developerContext}\n` : "";
+
+  const systemPrompt = `You are Rewind AI, a software reliability assistant.${developerContextBlock}
 
 Analyze the user's request and propose exact, structured file changes for a sandboxed project.
 
@@ -461,6 +464,7 @@ export async function generateChangeProposal(
     enableThinking?: boolean;
     temperature?: number;
     maxTokens?: number;
+    developerContext?: string;
   }
 ): Promise<AIChangeProposal> {
   const result = await generateChangeProposalWithMeta(userPrompt, contextFiles, options);

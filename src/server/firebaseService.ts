@@ -1,6 +1,8 @@
 import type { ProjectMetadata } from "../types/project";
 import type { Snapshot } from "../types/recovery";
 import type { RAGDocument } from "../types/rag";
+import type { ChatSession, ChatMessage } from "../types/chat";
+import type { ProjectMemory } from "../types/memory";
 
 export interface FirebaseConnectionStatus {
   configured: boolean;
@@ -213,6 +215,111 @@ export async function syncDocumentToFirebase(
     return true;
   } catch (err) {
     console.error("[Firebase syncDocument Error]:", err);
+    return false;
+  }
+}
+
+/**
+ * Persists chat session to Firestore: users/{userId}/projects/{projectId}/chat_sessions/{sessionId}
+ */
+export async function syncChatSessionToFirebase(
+  userId: string = "default_user",
+  projectId: string,
+  session: ChatSession
+): Promise<boolean> {
+  try {
+    const db = await getFirestoreDb();
+    if (!db) return false;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessionRef = (db as any)
+      .collection("users")
+      .doc(userId)
+      .collection("projects")
+      .doc(projectId)
+      .collection("chat_sessions")
+      .doc(session.id);
+
+    await sessionRef.set(
+      {
+        ...session,
+        syncedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+    return true;
+  } catch (err) {
+    console.error("[Firebase syncChatSession Error]:", err);
+    return false;
+  }
+}
+
+/**
+ * Persists chat message to Firestore: users/{userId}/projects/{projectId}/chat_sessions/{sessionId}/messages/{messageId}
+ */
+export async function syncChatMessageToFirebase(
+  userId: string = "default_user",
+  projectId: string,
+  sessionId: string,
+  message: ChatMessage
+): Promise<boolean> {
+  try {
+    const db = await getFirestoreDb();
+    if (!db) return false;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const msgRef = (db as any)
+      .collection("users")
+      .doc(userId)
+      .collection("projects")
+      .doc(projectId)
+      .collection("chat_sessions")
+      .doc(sessionId)
+      .collection("messages")
+      .doc(message.id);
+
+    await msgRef.set({
+      ...message,
+      syncedAt: new Date().toISOString(),
+    });
+    return true;
+  } catch (err) {
+    console.error("[Firebase syncChatMessage Error]:", err);
+    return false;
+  }
+}
+
+/**
+ * Persists project memory to Firestore: users/{userId}/projects/{projectId}/memories/{memoryId}
+ */
+export async function syncProjectMemoryToFirebase(
+  userId: string = "default_user",
+  projectId: string,
+  memory: ProjectMemory
+): Promise<boolean> {
+  try {
+    const db = await getFirestoreDb();
+    if (!db) return false;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const memRef = (db as any)
+      .collection("users")
+      .doc(userId)
+      .collection("projects")
+      .doc(projectId)
+      .collection("memories")
+      .doc(memory.id);
+
+    await memRef.set(
+      {
+        ...memory,
+        syncedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+    return true;
+  } catch (err) {
+    console.error("[Firebase syncProjectMemory Error]:", err);
     return false;
   }
 }
