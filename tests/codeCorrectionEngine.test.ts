@@ -39,9 +39,15 @@ import {
   initializeDemoWorkspace,
 } from "../src/engine/demoWorkspace";
 import {
+  createProject,
+  listProjectSnapshots,
+  resolveProjectWorkspace,
+} from "../src/engine/projectManager";
+import {
   validateWorkspaceDeterministically,
   restoreSnapshot,
   listPermittedWorkspaceFiles,
+  applyApprovedFileChange,
 } from "../src/engine/recoveryEngine";
 import {
   checkAndReserveCredits,
@@ -1266,6 +1272,181 @@ export function validateStepSequence(steps: string[]): boolean {
 
       const balance2 = getProjectCreditBalance("demo-workspace", testStore);
       assert.strictEqual(balance2.used, 2); // Still 2, not 4!
+    });
+
+    it("8.1. applyApprovedAIProposal respects target projectId and isolates changes to designated project workspace", async () => {
+      const proj = createProject(
+        { name: "Production Isolation Test", description: "Verifies project-scoped AI proposal execution", template: "demo" },
+        testStore
+      );
+      const projWorkspace = resolveProjectWorkspace(proj.id, testStore);
+      const defaultReadmePath = path.join(testWorkspace, "README.md");
+      const projReadmePath = path.join(projWorkspace, "README.md");
+
+      const initialProjReadme = fs.readFileSync(projReadmePath, "utf-8");
+      const defaultReadmeBaseline = fs.existsSync(defaultReadmePath)
+        ? fs.readFileSync(defaultReadmePath, "utf-8")
+        : null;
+
+      const proposal: AIChangeProposal = {
+        id: "prop_isolate_test",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Update project readme with production notes",
+        summary: "Update isolated project README",
+        reasoning: "Test project-level isolation",
+        status: "approved",
+        verificationStatus: "verified",
+        verifiedInSandbox: true,
+        expectedValidationResult: "pass",
+        potentialRisks: "None",
+        modifications: [
+          {
+            path: "README.md",
+            operation: "modify",
+            replacementContent: "# Production Isolation Test\n\nUpdated strictly in isolated workspace.\n",
+          },
+        ],
+      };
+
+      const result = await applyApprovedAIProposal(projWorkspace, testStore, proposal, {
+        projectId: proj.id,
+      });
+
+      assert.strictEqual(result.success, true);
+      const updatedProjReadme = fs.readFileSync(projReadmePath, "utf-8");
+      assert.ok(updatedProjReadme.includes("Updated strictly in isolated workspace."));
+      assert.notStrictEqual(updatedProjReadme, initialProjReadme);
+
+      // Default demo workspace was untouched!
+      if (defaultReadmeBaseline !== null) {
+        assert.strictEqual(fs.readFileSync(defaultReadmePath, "utf-8"), defaultReadmeBaseline);
+      }
+    });
+
+    it("8.2. applyApprovedAIProposal tags pre-AI safety snapshot with target projectId, allowing project-scoped rollback", async () => {
+      const proj = createProject(
+        { name: "Project Snapshot Tagging", description: "Verifies snapshot attribution", template: "demo" },
+        testStore
+      );
+      const projWorkspace = resolveProjectWorkspace(proj.id, testStore);
+      const projReadmePath = path.join(projWorkspace, "README.md");
+      const initialContent = fs.readFileSync(projReadmePath, "utf-8");
+      const initialHash = calculateSha256(initialContent);
+
+      const proposal: AIChangeProposal = {
+        id: "prop_tagging_test",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Modify project file and verify snapshot attribution",
+        summary: "Modify project file",
+        reasoning: "Verify snapshot attribution",
+        status: "approved",
+        verificationStatus: "verified",
+        verifiedInSandbox: true,
+        expectedValidationResult: "pass",
+        potentialRisks: "None",
+        modifications: [
+          {
+            path: "README.md",
+            operation: "modify",
+            replacementContent: "# Changed Title\n\nNew body.\n",
+          },
+        ],
+      };
+
+      const result = await applyApprovedAIProposal(projWorkspace, testStore, proposal, {
+        projectId: proj.id,
+      });
+
+      // 1. Snapshot is credited to the project
+      const projSnapshots = listProjectSnapshots(proj.id, testStore);
+      const preSnap = projSnapshots.find((s) => s.id === result.snapshotBeforeId);
+      assert.ok(preSnap, "Pre-AI snapshot must belong to target project");
+      assert.strictEqual(preSnap?.workspaceId, proj.id);
+
+      // 2. Project-scoped restore succeeds cleanly
+      const recovery = restoreSnapshot(projWorkspace, testStore, result.snapshotBeforeId, {
+        force: true,
+        expectedProjectId: proj.id,
+      });
+      assert.strictEqual(recovery.success, true);
+      assert.strictEqual(calculateSha256(fs.readFileSync(projReadmePath, "utf-8")), initialHash);
+    });
+
+    it("8.3. applyApprovedAIProposal automatically performs emergency rollback to preSnapshot if partial write fails mid-way", async () => {
+      const workflowPath = path.join(testWorkspace, "agent-workflow.json");
+      const initialWorkflowContent = fs.readFileSync(workflowPath, "utf-8");
+      const initialWorkflowHash = calculateSha256(initialWorkflowContent);
+
+      // Create a directory with a permitted file name so writing to it as a file fails (EISDIR/EPERM)
+      const blockDirPath = path.join(testWorkspace, "blocker.json");
+      fs.mkdirSync(blockDirPath, { recursive: true });
+
+      const failingProposal: AIChangeProposal = {
+        id: "prop_atomic_failure_test",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Try partial write and verify blast radius rollback",
+        summary: "Partial write test",
+        reasoning: "Verify emergency rollback on mid-way write failure",
+        status: "approved",
+        verificationStatus: "verified",
+        verifiedInSandbox: true,
+        expectedValidationResult: "pass",
+        potentialRisks: "None",
+        modifications: [
+          {
+            path: "agent-workflow.json",
+            operation: "modify",
+            replacementContent: '{"agentName": "ModifiedBeforeCrash"}',
+          },
+          {
+            path: "blocker.json",
+            operation: "create",
+            replacementContent: '{"corrupt": true}',
+          },
+        ],
+      };
+
+      // Execution must reject due to blocker.json write error
+      await assert.rejects(
+        async () => {
+          await applyApprovedAIProposal(testWorkspace, testStore, failingProposal, {
+            projectId: "demo-workspace",
+          });
+        }
+      );
+
+      // Blast-radius emergency rollback restored agent-workflow.json to exact initial content!
+      const currentWorkflowContent = fs.readFileSync(workflowPath, "utf-8");
+      assert.strictEqual(
+        calculateSha256(currentWorkflowContent),
+        initialWorkflowHash,
+        "Partial write must be automatically rolled back to initial state!"
+      );
+    });
+
+    it("8.4. applyApprovedFileChange respects target projectId and isolates safety snapshots", () => {
+      const proj = createProject(
+        { name: "Single File Modify Isolation", description: "Verifies file change snapshot isolation" },
+        testStore
+      );
+      const projWorkspace = resolveProjectWorkspace(proj.id, testStore);
+
+      const result = applyApprovedFileChange(
+        projWorkspace,
+        testStore,
+        "src/evaluator.ts",
+        "export function test() { return true; }\n",
+        "Add test function",
+        { projectId: proj.id }
+      );
+
+      const projSnapshots = listProjectSnapshots(proj.id, testStore);
+      const matchingSnap = projSnapshots.find((s) => s.id === result.snapshotBeforeId);
+      assert.ok(matchingSnap, "Pre-change safety snapshot must be associated with target project");
+      assert.strictEqual(matchingSnap?.workspaceId, proj.id);
     });
   });
 });

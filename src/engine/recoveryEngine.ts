@@ -320,7 +320,8 @@ export function applyApprovedFileChange(
   storeRoot: string,
   relativePath: string,
   newContent: string,
-  actionSummary: string
+  actionSummary: string,
+  options?: { projectId?: string }
 ): { change: FileChange; snapshotBeforeId: string } {
   if (!isPermittedFile(relativePath)) {
     throw new SecurityError(`File '${relativePath}' is not permitted for modification.`);
@@ -342,7 +343,8 @@ export function applyApprovedFileChange(
     workspaceRoot,
     storeRoot,
     `Auto: Before editing ${relativePath}`,
-    `Safety snapshot before applying approved modification: ${actionSummary}`
+    `Safety snapshot before applying approved modification: ${actionSummary}`,
+    options?.projectId ? { projectId: options.projectId } : undefined
   );
 
   // Apply change atomically
@@ -456,7 +458,8 @@ export function restoreSnapshot(
     workspaceRoot,
     storeRoot,
     `Pre-rollback Checkpoint (Target: ${snapshotId})`,
-    `Safety snapshot captured immediately prior to restoring snapshot ${snapshot.name}`
+    `Safety snapshot captured immediately prior to restoring snapshot ${snapshot.name}`,
+    { projectId: options.expectedProjectId || loaded.snapshot.workspaceId }
   );
 
   const restoredFiles: string[] = [];

@@ -9,18 +9,20 @@ export async function POST(request: Request) {
     const filePath = typeof body.path === "string" ? body.path.trim() : "";
     const content = typeof body.content === "string" ? body.content : "";
     const summary = typeof body.summary === "string" ? body.summary.trim() : "Controlled modification";
+    const projectIdParam = typeof body.projectId === "string" ? body.projectId.trim() : undefined;
 
     if (!filePath) {
       return NextResponse.json({ error: "Missing required parameter 'path'." }, { status: 400 });
     }
 
-    const { workspaceRoot, storeRoot } = getContextRoots();
+    const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const result = applyApprovedFileChange(
       workspaceRoot,
       storeRoot,
       filePath,
       content,
-      summary
+      summary,
+      { projectId }
     );
 
     return NextResponse.json({

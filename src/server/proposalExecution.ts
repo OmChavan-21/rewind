@@ -24,6 +24,7 @@ import {
   createSnapshot,
   recordAction,
   validateWorkspaceDeterministically,
+  restoreSnapshot,
 } from "../engine/recoveryEngine";
 import { generateUnifiedDiff } from "../engine/diff";
 import { scanContentSecurity } from "../security/contentScanner";
@@ -58,7 +59,7 @@ export async function applyApprovedAIProposal(
   workspaceRoot: string,
   storeRoot: string,
   proposal: AIChangeProposal,
-  options?: { enforcePreVerification?: boolean }
+  options?: { enforcePreVerification?: boolean; projectId?: string }
 ): Promise<ApplyProposalResult> {
   if (proposal.status === "rejected") {
     throw new Error(`Cannot apply rejected proposal ${proposal.id}`);
@@ -122,11 +123,16 @@ export async function applyApprovedAIProposal(
   // 3. AUTOMATIC RECOVERY SNAPSHOT: Capture pre-proposal baseline state
   const snapshotName = `Pre-AI: ${proposal.summary.slice(0, 35)}`;
   const snapshotDesc = `Safety snapshot captured before applying AI Proposal ${proposal.id} (${proposal.model})`;
-  const preSnapshot = createSnapshot(workspaceRoot, storeRoot, snapshotName, snapshotDesc);
+  const targetProjectId = options?.projectId || (proposal as { projectId?: string }).projectId || "demo-workspace";
+  const preSnapshot = createSnapshot(workspaceRoot, storeRoot, snapshotName, snapshotDesc, {
+    projectId: targetProjectId,
+    proposalId: proposal.id,
+  });
 
   const appliedChanges: AppliedFileResult[] = [];
 
-  // 4. Apply changes atomically
+  // 4. Apply changes atomically with blast radius rollback on partial failure
+  try {
   for (const mod of proposal.modifications) {
     const resolved = resolveAndValidatePath(workspaceRoot, mod.path, {
       allowNonExistent: mod.operation === "create",
@@ -174,6 +180,15 @@ export async function applyApprovedAIProposal(
         operation: mod.operation,
       },
     });
+  }
+
+  } catch (applyErr) {
+    try {
+      restoreSnapshot(workspaceRoot, storeRoot, preSnapshot.id, { force: true });
+    } catch (rollbackErr) {
+      console.error("[Rewind Blast Radius] Emergency rollback failed:", rollbackErr);
+    }
+    throw applyErr;
   }
 
   // 5. Post-apply deterministic validation

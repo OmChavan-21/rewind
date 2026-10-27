@@ -19,8 +19,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid or missing proposal object." }, { status: 400 });
     }
 
-    const { workspaceRoot, storeRoot } = getContextRoots();
-    const result = await applyApprovedAIProposal(workspaceRoot, storeRoot, proposal);
+    const targetProjectId =
+      typeof body.projectId === "string" && body.projectId.trim()
+        ? body.projectId.trim()
+        : typeof proposal.projectId === "string" && proposal.projectId.trim()
+        ? proposal.projectId.trim()
+        : undefined;
+    const { workspaceRoot, storeRoot, projectId } = getContextRoots(targetProjectId);
+    const result = await applyApprovedAIProposal(workspaceRoot, storeRoot, proposal, { projectId });
 
     const statusCode = result.success ? 200 : 422;
     return NextResponse.json({ result }, { status: statusCode });

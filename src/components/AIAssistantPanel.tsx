@@ -272,6 +272,7 @@ export function AIAssistantPanel({
         body: JSON.stringify({
           proposal: { ...proposal, status: "approved" },
           approved: true,
+          projectId,
         }),
       });
 

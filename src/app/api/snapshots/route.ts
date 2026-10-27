@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     const projectIdParam = typeof body.projectId === "string" ? body.projectId.trim() : undefined;
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
-    const snapshot = createSnapshot(workspaceRoot, storeRoot, name, description);
+    const snapshot = createSnapshot(workspaceRoot, storeRoot, name, description, { projectId });
 
     // Sync snapshot metadata to Firebase if configured
     await syncSnapshotToFirebase("default_user", projectId, snapshot).catch(() => {});
