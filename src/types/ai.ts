@@ -5,6 +5,7 @@
 
 import type { ValidationResult, RecoveryResult } from "./recovery";
 import type { AIProposalRoutingMeta } from "./router";
+import type { CodeDiagnostic } from "./diagnostics";
 
 export type AIProvider = "nvidia" | "nebius";
 
@@ -43,6 +44,32 @@ export interface ProposedFileModification {
   explanation?: string;
 }
 
+export type VerificationStatus =
+  | "verified"
+  | "verification_failed"
+  | "repair_exhausted"
+  | "verification_incomplete";
+
+export interface RepairAttempt {
+  attemptNumber: number;
+  diagnosticsFedBack: string[];
+  candidateModifications: ProposedFileModification[];
+  verificationPassed: boolean;
+  errors: string[];
+}
+
+export interface SelfRepairResult {
+  status: VerificationStatus;
+  proposal: AIChangeProposal;
+  initialProposal: AIChangeProposal;
+  repairAttempts: RepairAttempt[];
+  attemptsCount: number;
+  finalDiagnostics: CodeDiagnostic[];
+  finalErrors: string[];
+  verifiedInSandbox: boolean;
+  message: string;
+}
+
 export interface AIChangeProposal {
   id: string;
   model: string;
@@ -56,6 +83,10 @@ export interface AIChangeProposal {
   status: "pending_approval" | "approved" | "applied" | "rejected";
   /** Optional Auto Router decision and dual-accounting metrics */
   routingMeta?: AIProposalRoutingMeta;
+  /** Staged candidate verification outcome */
+  verificationStatus?: VerificationStatus;
+  verifiedInSandbox?: boolean;
+  repairAttemptsCount?: number;
 }
 
 export interface AppliedFileResult {

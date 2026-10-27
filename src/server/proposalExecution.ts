@@ -64,6 +64,17 @@ export async function applyApprovedAIProposal(
     throw new Error(`Cannot apply rejected proposal ${proposal.id}`);
   }
 
+  // Refuse application if candidate verification failed or was incomplete
+  if (
+    proposal.verificationStatus === "verification_failed" ||
+    proposal.verificationStatus === "repair_exhausted" ||
+    proposal.verificationStatus === "verification_incomplete"
+  ) {
+    throw new Error(
+      `[Verification Blocker] Cannot apply proposal '${proposal.id}': candidate verification status is '${proposal.verificationStatus}'. Failed or unverified candidates cannot modify the live workspace.`
+    );
+  }
+
   // Optional candidate pre-verification in isolated sandbox
   if (options?.enforcePreVerification) {
     const stagedResult = stageAndVerifyProposal(workspaceRoot, proposal);

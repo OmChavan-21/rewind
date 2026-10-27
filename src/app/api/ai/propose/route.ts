@@ -17,6 +17,9 @@ import {
 } from "@/server/ai/dualAccounting";
 import { SecurityError } from "@/security/boundaries";
 import type { AIProposalRoutingMeta } from "@/types/router";
+import { runSelfRepairLoop } from "@/server/ai/selfRepairEngine";
+import { verifyCandidatePatchInSandbox } from "@/engine/patchSandbox";
+import type { SelfRepairResult } from "@/types/ai";
 
 export async function POST(request: Request) {
   let reservationId: string | undefined;
@@ -129,7 +132,36 @@ export async function POST(request: Request) {
     );
     reservationId = undefined;
 
-    // 6. Assemble Full Routing & Accounting Metadata
+    // 6. Compiler-in-the-Loop Self-Repair & Candidate Staging Verification
+    let repairOutcome: SelfRepairResult | undefined;
+    const enableSelfRepair = body.selfRepair === true || body.verifyCandidate === true;
+
+    if (enableSelfRepair) {
+      try {
+        repairOutcome = await runSelfRepairLoop(
+          workspaceRoot,
+          result.proposal,
+          contextFiles,
+          {
+            model: decision.selectedModel.id,
+            provider: decision.selectedProvider,
+            maxAttempts: typeof body.maxRepairAttempts === "number" ? body.maxRepairAttempts : 2,
+          }
+        );
+        result.proposal = repairOutcome.proposal;
+      } catch {
+        result.proposal.verificationStatus = "verification_incomplete";
+        result.proposal.verifiedInSandbox = false;
+      }
+    } else {
+      // Fast non-destructive candidate staging verification pass
+      const staged = verifyCandidatePatchInSandbox(workspaceRoot, result.proposal.modifications);
+      result.proposal.verificationStatus = staged.passed ? "verified" : "verification_failed";
+      result.proposal.verifiedInSandbox = staged.passed;
+      result.proposal.repairAttemptsCount = 0;
+    }
+
+    // 7. Assemble Full Routing & Accounting Metadata
     const creditBalance = getProjectCreditBalance(activeProjectId, storeRoot);
 
     const routingMeta: AIProposalRoutingMeta = {
@@ -151,6 +183,19 @@ export async function POST(request: Request) {
       proposal: result.proposal,
       routingMeta,
       creditAllowance: routingMeta.creditAllowance,
+      verification: repairOutcome
+        ? {
+            status: repairOutcome.status,
+            verifiedInSandbox: repairOutcome.verifiedInSandbox,
+            repairAttemptsCount: repairOutcome.attemptsCount,
+            message: repairOutcome.message,
+            repairAttempts: repairOutcome.repairAttempts,
+          }
+        : {
+            status: result.proposal.verificationStatus,
+            verifiedInSandbox: result.proposal.verifiedInSandbox,
+            repairAttemptsCount: 0,
+          },
     });
   } catch (err: unknown) {
     if (reservationId) {

@@ -49,3 +49,5 @@ export interface AIProviderClient {
   /** Executes a chat completion returning raw text and token usage */
   generateCompletion(request: ProviderCompletionRequest): Promise<ProviderCompletionResponse>;
 }
+
+export type ProviderClient = AIProviderClient;

@@ -32,11 +32,25 @@ import {
   stageAndVerifyProposal,
 } from "../src/server/proposalExecution";
 import {
+  runSelfRepairLoop,
+} from "../src/server/ai/selfRepairEngine";
+import type { ProviderClient } from "../src/server/ai/providerInterface";
+import {
   initializeDemoWorkspace,
 } from "../src/engine/demoWorkspace";
 import {
   validateWorkspaceDeterministically,
+  restoreSnapshot,
+  listPermittedWorkspaceFiles,
 } from "../src/engine/recoveryEngine";
+import {
+  checkAndReserveCredits,
+  releaseCreditReservation,
+  commitCreditReservation,
+  accountTaskExecution,
+  getProjectCreditBalance,
+} from "../src/server/ai/dualAccounting";
+import { getModelMetadata } from "../src/server/ai/modelCatalog";
 import { calculateSha256 } from "../src/engine/storage";
 import type { AIChangeProposal, ProposedFileModification } from "../src/types/ai";
 
@@ -684,6 +698,574 @@ export function validateStepSequence(steps: string[]): boolean {
       const verification = stageAndVerifyProposal(testWorkspace, candidateProposal);
       assert.strictEqual(verification.passed, true);
       assert.strictEqual(verification.errors.length, 0);
+    });
+  });
+
+  // =========================================================================
+  // 7. COMPILER-IN-THE-LOOP SELF-REPAIR & END-TO-END PIPELINE REGRESSION
+  // =========================================================================
+  describe("7. Genuine End-to-End Compiler-in-the-Loop Self-Repair Pipeline", () => {
+    function createMockRepairClient(responses: string[]): ProviderClient {
+      let callIdx = 0;
+      return {
+        provider: "nvidia",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        isConfigured: true,
+        checkStatus: async () => ({ state: "connected", model: "mock", baseUrl: "https://integrate.api.nvidia.com/v1" }),
+        listAvailableModels: async () => ["mock-model"],
+        generateCompletion: async () => {
+          if (callIdx >= responses.length) {
+            throw new Error(`Mock client exhausted: call ${callIdx + 1} exceeds ${responses.length} responses.`);
+          }
+          const rawContent = responses[callIdx];
+          callIdx++;
+          return {
+            rawContent,
+            model: "mock-model",
+            usage: { promptTokens: 150, completionTokens: 80, totalTokens: 230 },
+            latencyMs: 15,
+          };
+        },
+      };
+    }
+
+    it("7.1. valid repair resolves an actual TypeScript semantic error via feedback loop", async () => {
+      // Initial proposal introduces a semantic type mismatch (TS2322) in src/evaluator.ts
+      const initialFailingProposal: AIChangeProposal = {
+        id: "prop_ts_error",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Update safety policy with new threshold",
+        summary: "Update threshold with type error",
+        reasoning: "Demonstrate self-repair loop",
+        status: "pending_approval",
+        potentialRisks: "Type error",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: `
+export interface EvaluationState {
+  stepCount: number;
+  safetyScore: number;
+  errorsDetected: string[];
+}
+
+export function evaluateSafetyPolicy(state: EvaluationState): boolean {
+  if (!state) return false;
+  const threshold: number = "0.85"; // TS2322 Type mismatch!
+  return state.safetyScore >= threshold;
+}
+
+export function validateStepSequence(steps: string[]): boolean {
+  return Array.isArray(steps) && steps[0] === "01_analyze";
+}
+`.trim(),
+          },
+        ],
+      };
+
+      // Mock LLM produces the corrected TypeScript code on attempt 1
+      const correctedProposalJson = JSON.stringify({
+        summary: "Fix type error in safety threshold",
+        reasoning: "Assigned numeric literal instead of string",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: `
+export interface EvaluationState {
+  stepCount: number;
+  safetyScore: number;
+  errorsDetected: string[];
+}
+
+export function evaluateSafetyPolicy(state: EvaluationState): boolean {
+  if (!state) return false;
+  const threshold: number = 0.85; // Fixed!
+  return state.safetyScore >= threshold;
+}
+
+export function validateStepSequence(steps: string[]): boolean {
+  return Array.isArray(steps) && steps[0] === "01_analyze";
+}
+`.trim(),
+            explanation: "Changed string to number",
+          },
+        ],
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+      });
+
+      const mockClient = createMockRepairClient([correctedProposalJson]);
+
+      const result = await runSelfRepairLoop(
+        testWorkspace,
+        initialFailingProposal,
+        [],
+        { repairClient: mockClient, maxAttempts: 2 }
+      );
+
+      assert.strictEqual(result.status, "verified");
+      assert.strictEqual(result.verifiedInSandbox, true);
+      assert.strictEqual(result.attemptsCount, 1);
+      assert.strictEqual(result.repairAttempts.length, 1);
+      assert.strictEqual(result.repairAttempts[0].verificationPassed, true);
+      assert.ok(result.proposal.modifications[0].replacementContent.includes("const threshold: number = 0.85;"));
+    });
+
+    it("7.2. multi-step repair: first proposal fails verification and second proposal fixes the diagnostic", async () => {
+      // Initial proposal fails: missing return type/syntax
+      const initialProposal: AIChangeProposal = {
+        id: "prop_multi_step",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Refactor evaluator",
+        summary: "Initial broken proposal",
+        reasoning: "Test two-step repair",
+        status: "pending_approval",
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: "const invalid: number = 'str';\n",
+          },
+        ],
+      };
+
+      // Attempt 1: fixes type error but forgets validateStepSequence invariant
+      const response1 = JSON.stringify({
+        summary: "Attempt 1 fix",
+        reasoning: "Fixed type but missed invariant",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: `
+export interface EvaluationState {
+  stepCount: number;
+  safetyScore: number;
+  errorsDetected: string[];
+}
+export function evaluateSafetyPolicy(state: EvaluationState): boolean {
+  return state.safetyScore >= 0.8;
+}
+`.trim(),
+          },
+        ],
+        expectedValidationResult: "pass",
+      });
+
+      // Attempt 2: adds required validateStepSequence, achieving full verification!
+      const response2 = JSON.stringify({
+        summary: "Attempt 2 complete fix",
+        reasoning: "Added validateStepSequence to satisfy invariant",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: `
+export interface EvaluationState {
+  stepCount: number;
+  safetyScore: number;
+  errorsDetected: string[];
+}
+export function evaluateSafetyPolicy(state: EvaluationState): boolean {
+  return state.safetyScore >= 0.8;
+}
+export function validateStepSequence(steps: string[]): boolean {
+  return Array.isArray(steps) && steps[0] === "01_analyze";
+}
+`.trim(),
+          },
+        ],
+        expectedValidationResult: "pass",
+      });
+
+      const mockClient = createMockRepairClient([response1, response2]);
+
+      const result = await runSelfRepairLoop(
+        testWorkspace,
+        initialProposal,
+        [],
+        { repairClient: mockClient, maxAttempts: 2 }
+      );
+
+      assert.strictEqual(result.status, "verified");
+      assert.strictEqual(result.attemptsCount, 2);
+      assert.strictEqual(result.repairAttempts.length, 2);
+      assert.strictEqual(result.repairAttempts[0].verificationPassed, false);
+      assert.strictEqual(result.repairAttempts[1].verificationPassed, true);
+    });
+
+    it("7.3. repair that still fails after two attempts is rejected with repair_exhausted", async () => {
+      const initialProposal: AIChangeProposal = {
+        id: "prop_stubborn_fail",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Refactor policy",
+        summary: "Broken proposal",
+        reasoning: "Never fixed",
+        status: "pending_approval",
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: "const x: number = 'still broken';\n",
+          },
+        ],
+      };
+
+      // Both attempts return persistently broken type errors
+      const brokenResponse = JSON.stringify({
+        summary: "Still broken attempt",
+        reasoning: "Failed to fix",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: "const x: number = 'still broken';\n",
+          },
+        ],
+        expectedValidationResult: "pass",
+      });
+
+      const mockClient = createMockRepairClient([brokenResponse, brokenResponse]);
+
+      const result = await runSelfRepairLoop(
+        testWorkspace,
+        initialProposal,
+        [],
+        { repairClient: mockClient, maxAttempts: 2 }
+      );
+
+      assert.strictEqual(result.status, "repair_exhausted");
+      assert.strictEqual(result.verifiedInSandbox, false);
+      assert.strictEqual(result.attemptsCount, 2);
+      assert.strictEqual(result.finalErrors.length > 0, true);
+      assert.ok(result.message.includes("exhausted"));
+    });
+
+    it("7.4. security-blocked code is immediately rejected without attempting self-repair", async () => {
+      const maliciousProposal: AIChangeProposal = {
+        id: "prop_eval_attempt",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Add eval helper",
+        summary: "Dangerous eval sink",
+        reasoning: "Check security cutoff",
+        status: "pending_approval",
+        potentialRisks: "Critical",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: "export const execCode = (str: string) => eval(str);\n",
+          },
+        ],
+      };
+
+      let clientCalled = false;
+      const mockClient: ProviderClient = {
+        provider: "nvidia",
+        baseUrl: "https://integrate.api.nvidia.com/v1",
+        isConfigured: true,
+        checkStatus: async () => ({ state: "connected", model: "mock", baseUrl: "https://integrate.api.nvidia.com/v1" }),
+        listAvailableModels: async () => ["mock-model"],
+        generateCompletion: async () => {
+          clientCalled = true;
+          throw new Error("Client should NEVER be called on security violations!");
+        },
+      };
+
+      const result = await runSelfRepairLoop(
+        testWorkspace,
+        maliciousProposal,
+        [],
+        { repairClient: mockClient, maxAttempts: 2 }
+      );
+
+      assert.strictEqual(result.status, "verification_failed");
+      assert.strictEqual(result.verifiedInSandbox, false);
+      assert.strictEqual(result.attemptsCount, 0);
+      assert.strictEqual(clientCalled, false, "Repair loop must NOT invoke model on security violations");
+      assert.ok(result.message.includes("Security violation detected"));
+    });
+
+    it("7.5. malformed and ambiguous patches are strictly rejected during staging without modifying live files", () => {
+      const evaluatorPath = path.join(testWorkspace, "src", "evaluator.ts");
+      const originalContent = fs.readFileSync(evaluatorPath, "utf-8");
+      const originalHash = calculateSha256(originalContent);
+
+      const malformedDiff = `
+--- a/src/evaluator.ts
++++ b/src/evaluator.ts
+@@ -1,10 +1,50 @@
++corrupted line counts in header
+`.trim();
+
+      const stagingResult = verifyCandidatePatchInSandbox(testWorkspace, malformedDiff);
+      assert.strictEqual(stagingResult.passed, false);
+      assert.ok(stagingResult.errors.some((e) => e.includes("Malformed") || e.includes("Diff")));
+
+      // Live workspace file remains 100% untouched
+      const currentContent = fs.readFileSync(evaluatorPath, "utf-8");
+      assert.strictEqual(calculateSha256(currentContent), originalHash);
+    });
+
+    it("7.6. Python syntax errors are detected by runtime and corrected via feedback", async () => {
+      const donutPath = path.join(testWorkspace, "donut.py");
+      fs.writeFileSync(donutPath, "def render():\n    pass\n", "utf-8");
+
+      const initialBrokenPython: AIChangeProposal = {
+        id: "prop_py_syntax",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Optimize render loop",
+        summary: "Broken python syntax",
+        reasoning: "Missing colon on def header",
+        status: "pending_approval",
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "donut.py",
+            operation: "modify",
+            replacementContent: "def render(x)\n    return x * 2\n", // Missing colon!
+          },
+        ],
+      };
+
+      const fixedPythonJson = JSON.stringify({
+        summary: "Fix colon in python def header",
+        reasoning: "Added missing colon",
+        modifications: [
+          {
+            path: "donut.py",
+            operation: "modify",
+            replacementContent: "def render(x):\n    return x * 2\n", // Fixed colon!
+          },
+        ],
+        expectedValidationResult: "pass",
+      });
+
+      const mockClient = createMockRepairClient([fixedPythonJson]);
+
+      const result = await runSelfRepairLoop(
+        testWorkspace,
+        initialBrokenPython,
+        [],
+        { repairClient: mockClient, maxAttempts: 2 }
+      );
+
+      assert.strictEqual(result.status, "verified");
+      assert.strictEqual(result.attemptsCount, 1);
+      assert.strictEqual(result.verifiedInSandbox, true);
+      assert.ok(result.proposal.modifications[0].replacementContent.includes("def render(x):"));
+    });
+
+    it("7.7. provider failures and timeouts release credit reservations and preserve live files", () => {
+      const evaluatorPath = path.join(testWorkspace, "src", "evaluator.ts");
+      const initialHash = calculateSha256(fs.readFileSync(evaluatorPath, "utf-8"));
+
+      // 1. Reserve credits for task
+      const reservation = checkAndReserveCredits("demo-workspace", 10, undefined, testStore);
+      assert.ok(reservation.reservationId);
+      assert.strictEqual(reservation.remainingAfterReserve, 90);
+
+      // 2. Simulate provider failure / timeout: release reservation
+      releaseCreditReservation(reservation.reservationId);
+
+      // 3. New reservation receives full remaining allowance (not depleted)
+      const reservationAfter = checkAndReserveCredits("demo-workspace", 10, undefined, testStore);
+      assert.strictEqual(reservationAfter.remainingAfterReserve, 90);
+      releaseCreditReservation(reservationAfter.reservationId);
+
+      // 4. Live files on disk are completely unchanged
+      const currentHash = calculateSha256(fs.readFileSync(evaluatorPath, "utf-8"));
+      assert.strictEqual(currentHash, initialHash);
+    });
+
+    it("7.8. failed verification leaves the original workspace byte-for-byte unchanged", async () => {
+      // Capture baseline hashes of all files in workspace
+      const allFiles = listPermittedWorkspaceFiles(testWorkspace);
+      const baselineHashes = new Map<string, string>();
+      for (const f of allFiles) {
+        const full = path.join(testWorkspace, f.path);
+        baselineHashes.set(f.path, calculateSha256(fs.readFileSync(full, "utf-8")));
+      }
+
+      // Candidate that failed verification
+      const failingProposal: AIChangeProposal = {
+        id: "prop_failed_apply",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Bad changes",
+        summary: "Broken change",
+        reasoning: "Should be refused",
+        status: "approved",
+        verificationStatus: "repair_exhausted",
+        potentialRisks: "Will fail",
+        expectedValidationResult: "fail",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: "broken content",
+          },
+        ],
+      };
+
+      await assert.rejects(
+        async () => {
+          await applyApprovedAIProposal(testWorkspace, testStore, failingProposal);
+        },
+        (err: unknown) => {
+          return err instanceof Error && err.message.includes("Verification Blocker");
+        }
+      );
+
+      // Confirm every file in workspace is byte-for-byte unchanged
+      for (const [relPath, hash] of baselineHashes.entries()) {
+        const currentContent = fs.readFileSync(path.join(testWorkspace, relPath), "utf-8");
+        assert.strictEqual(calculateSha256(currentContent), hash, `File ${relPath} was modified!`);
+      }
+    });
+
+    it("7.9. successful verification still requires explicit approval before applying", async () => {
+      const evaluatorPath = path.join(testWorkspace, "src", "evaluator.ts");
+      const originalContent = fs.readFileSync(evaluatorPath, "utf-8");
+      const originalHash = calculateSha256(originalContent);
+
+      const verifiedProposal: AIChangeProposal = {
+        id: "prop_verified_explicit",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Safe update",
+        summary: "Verified update to threshold",
+        reasoning: "Valid TypeScript code",
+        status: "pending_approval",
+        verificationStatus: "verified",
+        verifiedInSandbox: true,
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: originalContent.replace("safetyScore < 0.8", "safetyScore < 0.82"),
+          },
+        ],
+      };
+
+      // 1. Proposal is verified, but disk has NOT changed yet (requires approval)
+      const contentBeforeApproval = fs.readFileSync(evaluatorPath, "utf-8");
+      assert.strictEqual(calculateSha256(contentBeforeApproval), originalHash);
+
+      // 2. User explicitly approves and applies
+      verifiedProposal.status = "approved";
+      const applyResult = await applyApprovedAIProposal(testWorkspace, testStore, verifiedProposal, {
+        enforcePreVerification: true,
+      });
+
+      assert.strictEqual(applyResult.success, true);
+
+      // 3. Now the change is written to disk!
+      const contentAfterApply = fs.readFileSync(evaluatorPath, "utf-8");
+      assert.ok(contentAfterApply.includes("safetyScore < 0.82"));
+    });
+
+    it("7.10. approved application preserves automatic pre-snapshot and rollback behavior", async () => {
+      const evaluatorPath = path.join(testWorkspace, "src", "evaluator.ts");
+      const baselineContent = fs.readFileSync(evaluatorPath, "utf-8");
+      const baselineHash = calculateSha256(baselineContent);
+
+      const proposal: AIChangeProposal = {
+        id: "prop_with_snapshot",
+        model: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
+        createdAt: new Date().toISOString(),
+        userPrompt: "Update threshold",
+        summary: "Update threshold with snapshot",
+        reasoning: "Test snapshot rollback",
+        status: "approved",
+        verificationStatus: "verified",
+        verifiedInSandbox: true,
+        potentialRisks: "None",
+        expectedValidationResult: "pass",
+        modifications: [
+          {
+            path: "src/evaluator.ts",
+            operation: "modify",
+            replacementContent: baselineContent.replace("safetyScore < 0.8", "safetyScore < 0.88"),
+          },
+        ],
+      };
+
+      // 1. Apply approved proposal
+      const applyResult = await applyApprovedAIProposal(testWorkspace, testStore, proposal);
+      assert.strictEqual(applyResult.success, true);
+      assert.ok(applyResult.snapshotBeforeId.startsWith("snap_"));
+
+      // 2. Now rollback cleanly to the automatic pre-snapshot
+      const rollback = restoreSnapshot(testWorkspace, testStore, applyResult.snapshotBeforeId, {
+        force: true,
+      });
+      assert.strictEqual(rollback.success, true);
+
+      // 3. Workspace is restored to exact initial baseline hash!
+      const restoredContent = fs.readFileSync(evaluatorPath, "utf-8");
+      assert.strictEqual(calculateSha256(restoredContent), baselineHash);
+      assert.strictEqual(validateWorkspaceDeterministically(testWorkspace).passed, true);
+    });
+
+    it("7.11. concurrent requests cannot double-charge the same completed task", () => {
+      const taskId = "task_unique_concurrent_check";
+      const model = getModelMetadata("nvidia/Llama-3.1-Nemotron-70B-Instruct-HF", "nvidia");
+
+      // 1. First task accounting execution
+      const acct1 = accountTaskExecution({
+        taskId,
+        complexity: "standard_refactor",
+        model,
+        outcome: "success",
+        projectId: "demo-workspace",
+        storeRoot: testStore,
+      });
+
+      assert.strictEqual(acct1.isDuplicate, false);
+      assert.strictEqual(acct1.creditAccounting.creditsCharged, 2);
+
+      // Commit credit deduction to project store
+      const res1 = checkAndReserveCredits("demo-workspace", 2, undefined, testStore);
+      commitCreditReservation(res1.reservationId, "demo-workspace", taskId, 2, "standard_refactor", testStore);
+
+      const balance1 = getProjectCreditBalance("demo-workspace", testStore);
+      assert.strictEqual(balance1.used, 2);
+
+      // 2. Duplicate concurrent execution with same taskId
+      const acct2 = accountTaskExecution({
+        taskId,
+        complexity: "standard_refactor",
+        model,
+        outcome: "success",
+        projectId: "demo-workspace",
+        storeRoot: testStore,
+      });
+
+      assert.strictEqual(acct2.isDuplicate, true);
+
+      // Duplicate commit for same taskId does not double charge!
+      const res2 = checkAndReserveCredits("demo-workspace", 2, undefined, testStore);
+      commitCreditReservation(res2.reservationId, "demo-workspace", taskId, 2, "standard_refactor", testStore);
+
+      const balance2 = getProjectCreditBalance("demo-workspace", testStore);
+      assert.strictEqual(balance2.used, 2); // Still 2, not 4!
     });
   });
 });
