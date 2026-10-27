@@ -26,6 +26,12 @@ import {
   validateWorkspaceDeterministically,
 } from "../engine/recoveryEngine";
 import { generateUnifiedDiff } from "../engine/diff";
+import { scanContentSecurity } from "../security/contentScanner";
+import {
+  verifyCandidatePatchInSandbox,
+  type CandidateVerificationResult,
+  type StagingOptions,
+} from "../engine/patchSandbox";
 
 export class ConflictError extends Error {
   constructor(message: string) {
@@ -35,15 +41,37 @@ export class ConflictError extends Error {
 }
 
 /**
+ * Pre-verifies a proposal in an isolated staging sandbox without touching live workspace files.
+ */
+export function stageAndVerifyProposal(
+  workspaceRoot: string,
+  proposal: AIChangeProposal,
+  options?: StagingOptions
+): CandidateVerificationResult {
+  return verifyCandidatePatchInSandbox(workspaceRoot, proposal.modifications, options);
+}
+
+/**
  * Applies a user-approved AI change proposal with comprehensive safety checks.
  */
 export async function applyApprovedAIProposal(
   workspaceRoot: string,
   storeRoot: string,
-  proposal: AIChangeProposal
+  proposal: AIChangeProposal,
+  options?: { enforcePreVerification?: boolean }
 ): Promise<ApplyProposalResult> {
   if (proposal.status === "rejected") {
     throw new Error(`Cannot apply rejected proposal ${proposal.id}`);
+  }
+
+  // Optional candidate pre-verification in isolated sandbox
+  if (options?.enforcePreVerification) {
+    const stagedResult = stageAndVerifyProposal(workspaceRoot, proposal);
+    if (!stagedResult.passed) {
+      throw new Error(
+        `[Candidate Staging Verification Failed] Proposal rejected before modifying live workspace: ${stagedResult.errors.join("; ")}`
+      );
+    }
   }
 
   // 1. Boundary & Safety Verification for each modification
@@ -58,6 +86,14 @@ export async function applyApprovedAIProposal(
 
     if (mod.operation !== "delete") {
       validateFileSize(Buffer.byteLength(mod.replacementContent, "utf-8"));
+
+      // Security Content Scan: block dangerous sinks and leaked credentials
+      const secScan = scanContentSecurity(mod.path, mod.replacementContent);
+      if (secScan.violations.length > 0) {
+        throw new SecurityError(
+          `Security violation in '${mod.path}': ${secScan.violations.map((v) => v.message).join("; ")}`
+        );
+      }
     }
 
     // 2. Conflict detection: Check current file hash against expected hash

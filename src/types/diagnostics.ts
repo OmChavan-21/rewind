@@ -9,6 +9,7 @@ export type DiagnosticCategory =
   | "type"
   | "lint"
   | "validation"
+  | "security"
   | "ai_suggestion";
 
 export interface CodeDiagnostic {
@@ -22,7 +23,15 @@ export interface CodeDiagnostic {
   category: DiagnosticCategory;
   message: string;
   ruleId?: string;
-  source: "typescript" | "json_parser" | "python_static_analyzer" | "rewind_validator" | "ai_assistant";
+  source:
+    | "typescript"
+    | "json_parser"
+    | "python_static_analyzer"
+    | "python_compiler"
+    | "security_scanner"
+    | "rewind_validator"
+    | "ai_assistant"
+    | "patch_sandbox";
   suggestion?: string;
   codeSnippet?: string;
 }

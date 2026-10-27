@@ -6,6 +6,19 @@ import type {
   WorkspaceDiagnosticsResult,
 } from "../types/diagnostics";
 import { listPermittedWorkspaceFiles, validateWorkspaceDeterministically } from "./recoveryEngine";
+import {
+  diagnoseTypeScriptSemantic,
+  diagnoseTypeScriptWorkspaceSemantic,
+} from "./typeScriptCompiler";
+import { validatePythonSyntaxNative } from "./pythonValidator";
+import { scanContentSecurity } from "../security/contentScanner";
+
+export {
+  diagnoseTypeScriptSemantic,
+  diagnoseTypeScriptWorkspaceSemantic,
+  validatePythonSyntaxNative,
+  scanContentSecurity,
+};
 
 /**
  * Extracts line and column number from an offset in text.
@@ -26,8 +39,13 @@ function getLineAndColumn(
  */
 export function diagnoseTypeScriptFile(
   relPath: string,
-  content: string
+  content: string,
+  options?: { semantic?: boolean }
 ): CodeDiagnostic[] {
+  if (options?.semantic) {
+    return diagnoseTypeScriptSemantic(relPath, content, { includeSyntactic: true });
+  }
+
   const diagnostics: CodeDiagnostic[] = [];
 
   const sourceFile = ts.createSourceFile(
@@ -151,10 +169,10 @@ export function diagnoseJsonFile(
 }
 
 /**
- * Diagnoses Python source files using pure static analysis.
- * Safely analyzes syntax, bracket pairing, indentation consistency, and quotes without executing code.
+ * Pure static analysis for Python source files.
+ * Safely analyzes bracket pairing, indentation consistency, and quotes without executing code.
  */
-export function diagnosePythonFile(
+export function diagnosePythonStatic(
   relPath: string,
   content: string
 ): CodeDiagnostic[] {
@@ -322,11 +340,39 @@ export function diagnosePythonFile(
 }
 
 /**
+ * Comprehensive Python diagnostics combining:
+ * 1. Native Python AST parsing via local Python runtime
+ * 2. Static heuristic verification for style and complete token coverage
+ */
+export function diagnosePythonFile(
+  relPath: string,
+  content: string
+): CodeDiagnostic[] {
+  const diagnostics: CodeDiagnostic[] = [];
+
+  // 1. Run native Python runtime AST validation
+  const nativeResult = validatePythonSyntaxNative(relPath, content);
+  if (!nativeResult.valid) {
+    diagnostics.push(...nativeResult.diagnostics);
+  }
+
+  // 2. Run static analyzer for formatting/style and multi-error coverage
+  const staticDiags = diagnosePythonStatic(relPath, content);
+  for (const sd of staticDiags) {
+    // Include all static diagnostics to preserve comprehensive error reporting
+    diagnostics.push(sd);
+  }
+
+  return diagnostics;
+}
+
+/**
  * Runs a comprehensive, non-executing diagnostics pass over all workspace files.
  */
 export function runWorkspaceDiagnostics(
   workspaceRoot: string,
-  projectId: string = "demo-workspace"
+  projectId: string = "demo-workspace",
+  options?: { includeSemantic?: boolean; includeSecurityScan?: boolean }
 ): WorkspaceDiagnosticsResult {
   const allDiagnostics: CodeDiagnostic[] = [];
   const fileSummariesMap = new Map<string, { errors: number; warnings: number }>();
@@ -356,6 +402,7 @@ export function runWorkspaceDiagnostics(
   }
 
   const files = listPermittedWorkspaceFiles(workspaceRoot);
+  const tsFiles: { path: string; content: string }[] = [];
 
   for (const file of files) {
     const fullPath = path.join(workspaceRoot, file.path);
@@ -373,10 +420,18 @@ export function runWorkspaceDiagnostics(
 
     if ([".ts", ".tsx", ".js", ".jsx"].includes(ext)) {
       fileDiags = diagnoseTypeScriptFile(file.path, content);
+      if (options?.includeSemantic && (ext === ".ts" || ext === ".tsx")) {
+        tsFiles.push({ path: file.path, content });
+      }
     } else if (ext === ".json") {
       fileDiags = diagnoseJsonFile(file.path, content);
     } else if (ext === ".py") {
       fileDiags = diagnosePythonFile(file.path, content);
+    }
+
+    if (options?.includeSecurityScan) {
+      const secScan = scanContentSecurity(file.path, content);
+      fileDiags.push(...secScan.diagnostics);
     }
 
     let errCount = 0;
@@ -388,6 +443,18 @@ export function runWorkspaceDiagnostics(
 
     fileSummariesMap.set(file.path, { errors: errCount, warnings: warnCount });
     allDiagnostics.push(...fileDiags);
+  }
+
+  // If semantic TypeScript analysis was requested for workspace
+  if (options?.includeSemantic && tsFiles.length > 0) {
+    const semanticDiags = diagnoseTypeScriptWorkspaceSemantic(tsFiles);
+    for (const sd of semanticDiags) {
+      allDiagnostics.push(sd);
+      const current = fileSummariesMap.get(sd.filePath) || { errors: 0, warnings: 0 };
+      if (sd.severity === "error") current.errors++;
+      if (sd.severity === "warning") current.warnings++;
+      fileSummariesMap.set(sd.filePath, current);
+    }
   }
 
   // Also include deterministic invariant checks from Rewind's validator
