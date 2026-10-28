@@ -5,6 +5,7 @@ import {
   saveProjectMemory,
   deactivateProjectMemory,
 } from "@/engine/chatMemoryStore";
+import { syncProjectMemoryToFirebase } from "@/server/firebaseService";
 import { SecurityError } from "@/security/boundaries";
 import type { MemoryCategory, ProjectMemory } from "@/types/memory";
 import crypto from "node:crypto";
@@ -114,6 +115,8 @@ export async function POST(
     };
 
     const saved = saveProjectMemory(projectId, memory, storeRoot, user.uid);
+    // Sync memory to Firestore if configured
+    await syncProjectMemoryToFirebase(user.uid, projectId, saved).catch(() => {});
     return NextResponse.json({ memory: saved }, { status: 201 });
   } catch (err) {
     if (

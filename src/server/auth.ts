@@ -195,33 +195,52 @@ export async function getAuthenticatedUser(
 
   if (token) {
     // 1. Check if token is local dev token
-    const devSession = verifyDevSessionToken(token);
-    if (devSession) {
-      const users = loadDevUsers(storeRoot);
-      const user = users[devSession.userId];
-      if (user) {
-        return {
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName,
-          photoURL: user.photoURL,
-          role: user.role,
-          creditAllowance: user.creditAllowance,
-          creditsUsed: user.creditsUsed,
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt,
-          authProvider: "development",
-        };
+    if (token.startsWith("dev_")) {
+      // In production or when Firebase is required, strictly reject dev tokens
+      if (isFirebaseRequired()) {
+        return null;
+      }
+
+      const devSession = verifyDevSessionToken(token);
+      if (devSession) {
+        const users = loadDevUsers(storeRoot);
+        const user = users[devSession.userId];
+        if (user) {
+          return {
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName,
+            photoURL: user.photoURL,
+            role: user.role,
+            creditAllowance: user.creditAllowance,
+            creditsUsed: user.creditsUsed,
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+            authProvider: "development",
+          };
+        }
       }
     }
 
-    // 2. Check if Firebase is configured and verify Firebase ID token
+    // 2. Check if Firebase is configured and verify Firebase Session Cookie or ID Token
     const fbStatus = await checkFirebaseStatus();
     if (fbStatus.configured && fbStatus.state === "connected") {
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getAuth } = require("firebase-admin/auth");
-        const decoded = await getAuth().verifyIdToken(token);
+        let decoded: { uid: string; email?: string; name?: string; picture?: string } | null = null;
+        try {
+          // Official Firebase guidance: verify server-side session cookie first
+          decoded = await getAuth().verifySessionCookie(token, false);
+        } catch {
+          try {
+            // Fallback: verify Bearer ID token
+            decoded = await getAuth().verifyIdToken(token, false);
+          } catch {
+            decoded = null;
+          }
+        }
+
         if (decoded && decoded.uid) {
           return {
             uid: decoded.uid,
@@ -237,15 +256,16 @@ export async function getAuthenticatedUser(
           };
         }
       } catch {
-        // Not a valid Firebase ID token or verification failed
+        // Not a valid Firebase token or verification failed
       }
     }
   }
 
   // 3. Fallback: Development/test mock mode when running locally or during tests
-  // STRICTLY disabled in production or when REWIND_STRICT_AUTH / REWIND_DISABLE_DEV_AUTH is active
+  // STRICTLY disabled in production or when Firebase is required or when REWIND_STRICT_AUTH / REWIND_DISABLE_DEV_AUTH is active
   if (
     process.env.NODE_ENV !== "production" &&
+    !isFirebaseRequired() &&
     process.env.REWIND_STRICT_AUTH !== "true" &&
     process.env.REWIND_DISABLE_DEV_AUTH !== "true"
   ) {
@@ -271,10 +291,13 @@ export async function getAuthenticatedUser(
  * Determines whether Firebase Authentication is required in the active environment.
  */
 export function isFirebaseRequired(): boolean {
-  return (
-    process.env.AUTH_REQUIRE_FIREBASE === "true" ||
-    (process.env.NODE_ENV === "production" && Boolean(process.env.FIREBASE_PROJECT_ID))
-  );
+  if (process.env.AUTH_REQUIRE_FIREBASE === "true") {
+    return true;
+  }
+  if (process.env.NODE_ENV === "production") {
+    return process.env.REWIND_ALLOW_LOCAL_AUTH_IN_PROD !== "true";
+  }
+  return false;
 }
 
 /**
@@ -428,7 +451,30 @@ export async function registerUser(
         await (db as any).collection("users").doc(user.uid).set(user, { merge: true });
       }
 
-      const token = createDevSessionToken(user);
+      // Exchange credentials with Identity Toolkit to create secure Firebase session cookie
+      let token: string;
+      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+      if (apiKey) {
+        try {
+          const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password, returnSecureToken: true }),
+          });
+          const data = await res.json();
+          if (res.ok && data.idToken) {
+            token = await getAuth().createSessionCookie(data.idToken, { expiresIn: SESSION_TTL_MS });
+          } else {
+            token = await getAuth().createCustomToken(userRecord.uid);
+          }
+        } catch {
+          token = await getAuth().createCustomToken(userRecord.uid);
+        }
+      } else {
+        token = await getAuth().createCustomToken(userRecord.uid);
+      }
+
       return { user, token };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Firebase registration failed.";
@@ -557,7 +603,15 @@ export async function loginUser(
       authProvider: "firebase",
     };
 
-    const token = createDevSessionToken(user);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require("firebase-admin/auth");
+    let token: string;
+    try {
+      token = await getAuth().createSessionCookie(data.idToken, { expiresIn: SESSION_TTL_MS });
+    } catch {
+      token = data.idToken;
+    }
+
     return { user, token };
   }
 

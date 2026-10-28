@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { listChatSessions, createChatSession } from "@/engine/chatMemoryStore";
+import { syncChatSessionToFirebase } from "@/server/firebaseService";
 import { SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
@@ -62,6 +63,9 @@ export async function POST(request: Request) {
       storeRoot,
       user.uid
     );
+
+    // Sync session metadata to Firestore if configured
+    await syncChatSessionToFirebase(user.uid, projectId, session).catch(() => {});
 
     return NextResponse.json({ session }, { status: 201 });
   } catch (err) {

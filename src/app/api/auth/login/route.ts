@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { loginUser, createSessionCookieHeader } from "@/server/auth";
 import { getDefaultStoreRoot } from "@/engine/recoveryEngine";
+import { enforceRateLimit } from "@/security/rateLimiter";
 
 export async function POST(request: Request) {
+  const rateLimitRes = enforceRateLimit(request, "auth_login", 10, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const storeRoot = getDefaultStoreRoot();

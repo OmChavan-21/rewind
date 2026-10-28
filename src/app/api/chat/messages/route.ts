@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
 import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
+import { syncChatMessageToFirebase } from "@/server/firebaseService";
 import { SecurityError } from "@/security/boundaries";
 import type { ChatRole } from "@/types/chat";
 import {
@@ -64,6 +65,9 @@ export async function POST(request: Request) {
       storeRoot,
       user.uid
     );
+
+    // Sync message to Firestore if configured
+    await syncChatMessageToFirebase(user.uid, projectId, sessionId, savedMessage).catch(() => {});
 
     // If role is user, distill core intentions into project membrane
     let extractedMemories: unknown[] = [];

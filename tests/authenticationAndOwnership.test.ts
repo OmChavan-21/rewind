@@ -10,12 +10,15 @@ import {
   loginUser,
   createDevSessionToken,
   verifyDevSessionToken,
+  getAuthenticatedUser,
 } from "../src/server/auth";
 import { createProject } from "../src/engine/projectManager";
 import { createSnapshot } from "../src/engine/recoveryEngine";
+import { clearRateLimitStore } from "../src/security/rateLimiter";
 
 // API Route Handlers
 import { GET as authMeGet } from "../src/app/api/auth/me/route";
+import { POST as authLoginPost } from "../src/app/api/auth/login/route";
 import { GET as projectsGet, POST as projectsPost } from "../src/app/api/projects/route";
 import { GET as projectDetailGet } from "../src/app/api/projects/[id]/route";
 import { GET as projectMemoriesGet, POST as projectMemoriesPost } from "../src/app/api/projects/[id]/memories/route";
@@ -549,7 +552,7 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
             testStore
           );
         },
-        /Local filesystem authentication is prohibited in production mode/
+        /(Local filesystem authentication is prohibited in production mode|Firebase Authentication is required in this environment)/
       );
     } finally {
       (process.env as Record<string, string | undefined>).NODE_ENV = oldNodeEnv;
@@ -662,5 +665,95 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     });
     const limitsRes = await limitsGet(limitsReq);
     assert.strictEqual(limitsRes.status, 403);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. Production Security Hardening: Token Enforcement, Rate Limiting & Concurrency
+  // -------------------------------------------------------------------------
+  it("9.1. rejects dev tokens in production mode when Firebase is required", async () => {
+    const user = await registerUser(
+      { email: "dev_prod_check@example.com", password: "Password123!" },
+      testStore
+    );
+
+    const oldNodeEnv = process.env.NODE_ENV;
+    const oldRequireFb = process.env.AUTH_REQUIRE_FIREBASE;
+    try {
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+      process.env.AUTH_REQUIRE_FIREBASE = "true";
+
+      const req = new Request("http://localhost/api/auth/me", {
+        headers: { Authorization: `Bearer ${user.token}` },
+      });
+
+      const authUser = await getAuthenticatedUser(req, testStore);
+      assert.strictEqual(authUser, null, "dev_ token must be rejected in production Firebase mode");
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = oldNodeEnv;
+      process.env.AUTH_REQUIRE_FIREBASE = oldRequireFb;
+    }
+  });
+
+  it("9.2. enforces rate limiting on login endpoint against brute-force attempts", async () => {
+    clearRateLimitStore();
+
+    // 10 attempts allowed
+    for (let i = 0; i < 10; i++) {
+      const req = new Request("http://localhost/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.42" },
+        body: JSON.stringify({ email: "victim@example.com", password: "wrong" }),
+      });
+      const res = await authLoginPost(req);
+      assert.strictEqual(res.status, 401);
+    }
+
+    // 11th attempt must be blocked by rate limiter with 429 Too Many Requests
+    const reqBlocked = new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.42" },
+      body: JSON.stringify({ email: "victim@example.com", password: "wrong" }),
+    });
+    const resBlocked = await authLoginPost(reqBlocked);
+    assert.strictEqual(resBlocked.status, 429);
+    assert.ok(resBlocked.headers.get("Retry-After"));
+    const data = await resBlocked.json();
+    assert.ok(data.error.includes("Too many requests"));
+  });
+
+  it("9.3. safely handles concurrent project creation without registry corruption", async () => {
+    const user = await registerUser(
+      { email: "concurrent_dev@example.com", password: "Password123!" },
+      testStore
+    );
+
+    const promises = Array.from({ length: 8 }, (_, i) => {
+      const req = new Request("http://localhost/api/projects", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.token}`,
+        },
+        body: JSON.stringify({ name: `Concurrent App ${i}`, template: "empty" }),
+      });
+      return projectsPost(req);
+    });
+
+    const responses = await Promise.all(promises);
+    for (const res of responses) {
+      assert.strictEqual(res.status, 200);
+    }
+
+    // List projects and verify all 8 exist (+ 1 demo-workspace = 9)
+    const listReq = new Request("http://localhost/api/projects", {
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    const listRes = await projectsGet(listReq);
+    assert.strictEqual(listRes.status, 200);
+    const data = await listRes.json();
+    assert.strictEqual(data.projects.length, 9);
+    for (let i = 0; i < 8; i++) {
+      assert.ok(data.projects.some((p: { name: string }) => p.name === `Concurrent App ${i}`));
+    }
   });
 });
