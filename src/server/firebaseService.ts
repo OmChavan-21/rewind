@@ -46,27 +46,28 @@ export async function getFirestoreDb(): Promise<unknown | null> {
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const admin = require("firebase-admin");
+    const { initializeApp, getApps, cert, applicationDefault } = require("firebase-admin/app");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getFirestore } = require("firebase-admin/firestore");
 
-    if (!admin.apps.length) {
+    if (!getApps().length) {
       const privateKey = rawKey ? rawKey.replace(/\\n/g, "\n") : undefined;
 
       const credential = privateKey && clientEmail
-        ? admin.credential.cert({
+        ? cert({
             projectId,
             clientEmail,
             privateKey,
           })
-        : admin.credential.applicationDefault();
+        : applicationDefault();
 
-      admin.initializeApp({
+      initializeApp({
         credential,
         projectId,
       });
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    firestoreDbInstance = (admin as any).firestore();
+    firestoreDbInstance = getFirestore();
     return firestoreDbInstance;
   } catch (err) {
     console.error("[Firebase Admin Initialization Error]:", err);

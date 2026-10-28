@@ -3,6 +3,13 @@ import { getContextRoots } from "@/server/workspaceContext";
 import { getResourceLimits, getMemoryMetrics, computeDynamicLimits } from "@/security/limits";
 import { checkFirebaseStatus } from "@/server/firebaseService";
 import { getRAGProcessingStatus } from "@/server/ragService";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
@@ -10,6 +17,13 @@ export async function GET(request: Request) {
     const projId = searchParams.get("projectId") || undefined;
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projId);
+
+    // If querying specific non-demo project limits, assert access
+    if (projId && projId !== "demo-workspace") {
+      const user = await requireAuthenticatedUser(request, storeRoot);
+      assertProjectAccess(user, projId, storeRoot, "read");
+    }
+
     const limits = getResourceLimits();
     const memoryMetrics = getMemoryMetrics(workspaceRoot, storeRoot);
     const dynamicLimits = computeDynamicLimits(memoryMetrics.storageMetrics.workspaceDiskUsedBytes);
@@ -25,6 +39,13 @@ export async function GET(request: Request) {
       firebaseStatus,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Error retrieving system limits";
     return NextResponse.json({ error: message }, { status: 500 });
   }

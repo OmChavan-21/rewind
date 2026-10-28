@@ -3,44 +3,31 @@ import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 
 import {
   registerUser,
   loginUser,
   createDevSessionToken,
   verifyDevSessionToken,
-  getAuthenticatedUser,
-  requireAuthenticatedUser,
-  assertProjectAccess,
-  AuthenticationError,
-  ForbiddenError,
 } from "../src/server/auth";
-import { createProject, listProjects, getProject } from "../src/engine/projectManager";
-import {
-  createChatSession,
-  listChatSessions,
-  addChatMessage,
-  listChatMessages,
-  saveProjectMemory,
-  listProjectMemories,
-} from "../src/engine/chatMemoryStore";
-import { createSnapshot, restoreSnapshot, listSnapshots } from "../src/engine/recoveryEngine";
+import { createProject } from "../src/engine/projectManager";
+import { createSnapshot } from "../src/engine/recoveryEngine";
 
 // API Route Handlers
 import { GET as authMeGet } from "../src/app/api/auth/me/route";
-import { POST as authRegisterPost } from "../src/app/api/auth/register/route";
-import { POST as authLoginPost } from "../src/app/api/auth/login/route";
-import { POST as authLogoutPost } from "../src/app/api/auth/logout/route";
 import { GET as projectsGet, POST as projectsPost } from "../src/app/api/projects/route";
 import { GET as projectDetailGet } from "../src/app/api/projects/[id]/route";
 import { GET as projectMemoriesGet, POST as projectMemoriesPost } from "../src/app/api/projects/[id]/memories/route";
 import { GET as chatSessionsGet, POST as chatSessionsPost } from "../src/app/api/chat/sessions/route";
-import { GET as chatSessionDetailGet } from "../src/app/api/chat/sessions/[sessionId]/route";
 import { POST as chatMessagesPost } from "../src/app/api/chat/messages/route";
-import { GET as snapshotsGet, POST as snapshotsPost } from "../src/app/api/snapshots/route";
+import { POST as snapshotsPost } from "../src/app/api/snapshots/route";
 import { POST as snapshotRestorePost } from "../src/app/api/snapshots/[id]/restore/route";
-import { POST as uploadPost } from "../src/app/api/workspace/upload/route";
 import { POST as applyPost } from "../src/app/api/ai/apply/route";
+import { POST as demoBreakPost } from "../src/app/api/actions/demo-break/route";
+import { POST as validatePost } from "../src/app/api/actions/validate/route";
+import { GET as aiStatusGet } from "../src/app/api/ai/status/route";
+import { GET as limitsGet } from "../src/app/api/system/limits/route";
 
 describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolation Suite", () => {
   let tempBaseDir: string;
@@ -244,9 +231,8 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
         expiresAt: Date.now() - 1000,
       })
     ).toString("base64url");
-    const cryptoMod = require("node:crypto");
     const secret = process.env.AUTH_SESSION_SECRET || "rewind-session-signing-secret-safe-dev-key-2026";
-    const sig = cryptoMod.createHmac("sha256", secret).update(expiredPayload).digest("base64url");
+    const sig = crypto.createHmac("sha256", secret).update(expiredPayload).digest("base64url");
     const expiredToken = `dev_${expiredPayload}.${sig}`;
 
     assert.strictEqual(verifyDevSessionToken(expiredToken), null);
@@ -502,5 +488,179 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     assert.strictEqual(demoRes.status, 200);
     const demoData = await demoRes.json();
     assert.strictEqual(demoData.project.id, "demo-workspace");
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Fail-Closed Behavior on Firebase Configuration Errors & Production Protections
+  // -------------------------------------------------------------------------
+  it("6.1. rejects registration and login when Firebase is required but unconfigured", async () => {
+    process.env.AUTH_REQUIRE_FIREBASE = "true";
+    delete process.env.FIREBASE_PROJECT_ID;
+
+    await assert.rejects(
+      async () => {
+        await registerUser(
+          { email: "failclosed@example.com", password: "Password123!" },
+          testStore
+        );
+      },
+      /Firebase Authentication is required/
+    );
+
+    await assert.rejects(
+      async () => {
+        await loginUser(
+          { email: "failclosed@example.com", password: "Password123!" },
+          testStore
+        );
+      },
+      /Firebase Authentication is required/
+    );
+  });
+
+  it("6.2. fails closed when Firebase is configured but has connection errors", async () => {
+    process.env.FIREBASE_PROJECT_ID = "bad-project-id";
+    process.env.FIREBASE_CLIENT_EMAIL = "bad@serviceaccount.com";
+    process.env.FIREBASE_PRIVATE_KEY = "not-a-valid-pem-key";
+
+    await assert.rejects(
+      async () => {
+        await registerUser(
+          { email: "badconn@example.com", password: "Password123!" },
+          testStore
+        );
+      },
+      /Firebase/
+    );
+  });
+
+  it("6.3. prohibits local filesystem authentication in production mode without explicit opt-in", async () => {
+    const oldNodeEnv = process.env.NODE_ENV;
+    delete process.env.FIREBASE_PROJECT_ID;
+    delete process.env.AUTH_REQUIRE_FIREBASE;
+    (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+    delete process.env.REWIND_ALLOW_LOCAL_AUTH_IN_PROD;
+
+    try {
+      await assert.rejects(
+        async () => {
+          await registerUser(
+            { email: "prod_local@example.com", password: "Password123!" },
+            testStore
+          );
+        },
+        /Local filesystem authentication is prohibited in production mode/
+      );
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = oldNodeEnv;
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. CSRF Defense on Cookie-Authenticated Mutating Requests
+  // -------------------------------------------------------------------------
+  it("7.1. blocks cross-origin mutating requests when authenticated via session cookie", async () => {
+    const user = await registerUser(
+      { email: "csrf_victim@example.com", password: "Password123!" },
+      testStore
+    );
+
+    // Malicious site attempts POST with victim's session cookie
+    const csrfReq = new Request("http://localhost:3000/api/snapshots", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "localhost:3000",
+        Origin: "https://evil-attacker.com",
+        Cookie: `rewind_session=${user.token}`,
+      },
+      body: JSON.stringify({ name: "Attacker Snapshot" }),
+    });
+
+    const res = await snapshotsPost(csrfReq);
+    assert.strictEqual(res.status, 403);
+    const data = await res.json();
+    assert.ok(data.error.includes("CSRF"));
+  });
+
+  it("7.2. permits same-origin mutating requests with session cookie", async () => {
+    const user = await registerUser(
+      { email: "sameorigin@example.com", password: "Password123!" },
+      testStore
+    );
+
+    const validReq = new Request("http://localhost:3000/api/snapshots", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Host: "localhost:3000",
+        Origin: "http://localhost:3000",
+        Cookie: `rewind_session=${user.token}`,
+      },
+      body: JSON.stringify({ name: "Valid Snapshot" }),
+    });
+
+    const res = await snapshotsPost(validReq);
+    assert.strictEqual(res.status, 201);
+  });
+
+  // -------------------------------------------------------------------------
+  // 8. Authorization Coverage on Demo Actions, AI Status, and System Limits
+  // -------------------------------------------------------------------------
+  it("8.1. enforces authentication on demo-break and validate actions", async () => {
+    // Unauthenticated POST /api/actions/demo-break -> 401
+    const unauthBreak = new Request("http://localhost/api/actions/demo-break", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetFile: "agent-workflow.json" }),
+    });
+    const resBreak = await demoBreakPost(unauthBreak);
+    assert.strictEqual(resBreak.status, 401);
+
+    // Unauthenticated POST /api/actions/validate -> 401
+    const unauthValidate = new Request("http://localhost/api/actions/validate", {
+      method: "POST",
+    });
+    const resValidate = await validatePost(unauthValidate);
+    assert.strictEqual(resValidate.status, 401);
+
+    // Authenticated calls succeed
+    const user = await registerUser(
+      { email: "action_dev@example.com", password: "Password123!" },
+      testStore
+    );
+    const authValidate = new Request("http://localhost/api/actions/validate", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${user.token}` },
+    });
+    const authValRes = await validatePost(authValidate);
+    assert.strictEqual(authValRes.status, 200);
+  });
+
+  it("8.2. blocks unauthorized cross-user inspection of project AI status and system limits", async () => {
+    const userA = await registerUser(
+      { email: "alice_metrics@example.com", password: "Password123!" },
+      testStore
+    );
+    const userB = await registerUser(
+      { email: "bob_metrics@example.com", password: "Password123!" },
+      testStore
+    );
+
+    const projA = createProject({ name: "Alice Metrics App", template: "empty" }, testStore, userA.user.uid);
+
+    // User B tries to inspect Alice's AI credit status -> 403 Forbidden
+    const aiStatusReq = new Request(`http://localhost/api/ai/status?projectId=${projA.id}`, {
+      headers: { Authorization: `Bearer ${userB.token}` },
+    });
+    const aiStatusRes = await aiStatusGet(aiStatusReq);
+    assert.strictEqual(aiStatusRes.status, 403);
+
+    // User B tries to inspect Alice's memory and storage limits -> 403 Forbidden
+    const limitsReq = new Request(`http://localhost/api/system/limits?projectId=${projA.id}`, {
+      headers: { Authorization: `Bearer ${userB.token}` },
+    });
+    const limitsRes = await limitsGet(limitsReq);
+    assert.strictEqual(limitsRes.status, 403);
   });
 });

@@ -268,12 +268,66 @@ export async function getAuthenticatedUser(
 }
 
 /**
+ * Determines whether Firebase Authentication is required in the active environment.
+ */
+export function isFirebaseRequired(): boolean {
+  return (
+    process.env.AUTH_REQUIRE_FIREBASE === "true" ||
+    (process.env.NODE_ENV === "production" && Boolean(process.env.FIREBASE_PROJECT_ID))
+  );
+}
+
+/**
+ * Asserts same-origin on mutating HTTP requests (POST, PUT, PATCH, DELETE)
+ * when using cookie-based authentication. Protects against CSRF.
+ */
+export function assertSameOrigin(request: Request): void {
+  const method = request.method.toUpperCase();
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+    return;
+  }
+
+  // If using Authorization: Bearer, it is a programmatic/API call not vulnerable to ambient browser CSRF
+  const authHeader = request.headers.get("authorization") || request.headers.get("Authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    return;
+  }
+
+  const originHeader = request.headers.get("origin") || request.headers.get("Origin");
+  if (!originHeader) {
+    const referer = request.headers.get("referer") || request.headers.get("Referer");
+    if (!referer) return;
+    try {
+      const refUrl = new URL(referer);
+      const host = request.headers.get("host") || "";
+      if (refUrl.host !== host && !host.includes(refUrl.hostname)) {
+        throw new ForbiddenError("CSRF violation: Mismatched referer origin.");
+      }
+    } catch (e) {
+      if (e instanceof ForbiddenError) throw e;
+    }
+    return;
+  }
+
+  try {
+    const originUrl = new URL(originHeader);
+    const host = request.headers.get("host") || "";
+    if (originUrl.host !== host && !host.includes(originUrl.hostname)) {
+      throw new ForbiddenError(`CSRF violation: Cross-origin request blocked from '${originHeader}'.`);
+    }
+  } catch (e) {
+    if (e instanceof ForbiddenError) throw e;
+  }
+}
+
+/**
  * Asserts user is authenticated. Throws AuthenticationError if not.
  */
 export async function requireAuthenticatedUser(
   request: Request,
   storeRoot: string = getDefaultStoreRoot()
 ): Promise<AuthUser> {
+  assertSameOrigin(request);
   const user = await getAuthenticatedUser(request, storeRoot);
   if (!user) {
     throw new AuthenticationError();
@@ -329,8 +383,21 @@ export async function registerUser(
     throw new Error("Password must be at least 8 characters long.");
   }
 
-  // Check if Firebase is configured
+  // Check if Firebase is configured or required
   const fbStatus = await checkFirebaseStatus();
+  if (isFirebaseRequired()) {
+    if (!fbStatus.configured) {
+      throw new Error(
+        "Firebase Authentication is required in this environment, but FIREBASE_PROJECT_ID is not configured. Local fallback is disabled."
+      );
+    }
+    if (fbStatus.state === "failed") {
+      throw new Error(
+        `Firebase Authentication configuration error: ${fbStatus.message}. Cannot fall back to local mode in production.`
+      );
+    }
+  }
+
   if (fbStatus.configured && fbStatus.state === "connected") {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -367,6 +434,20 @@ export async function registerUser(
       const message = err instanceof Error ? err.message : "Firebase registration failed.";
       throw new Error(`Registration failed: ${message}`);
     }
+  }
+
+  // If Firebase was configured but failed to connect, fail closed!
+  if (fbStatus.configured && fbStatus.state === "failed") {
+    throw new Error(
+      `Firebase Authentication is configured but unavailable: ${fbStatus.message}. Registration blocked.`
+    );
+  }
+
+  // Local filesystem fallback: prohibited in production mode unless explicitly opted in
+  if (process.env.NODE_ENV === "production" && process.env.REWIND_ALLOW_LOCAL_AUTH_IN_PROD !== "true") {
+    throw new Error(
+      "Local filesystem authentication is prohibited in production mode without explicit REWIND_ALLOW_LOCAL_AUTH_IN_PROD opt-in."
+    );
   }
 
   // Development mode: store in .rewind_store/auth/users.json
@@ -430,37 +511,68 @@ export async function loginUser(
   }
 
   const fbStatus = await checkFirebaseStatus();
+  if (isFirebaseRequired()) {
+    if (!fbStatus.configured) {
+      throw new Error(
+        "Firebase Authentication is required in this environment, but FIREBASE_PROJECT_ID is not configured. Local fallback is disabled."
+      );
+    }
+    if (fbStatus.state === "failed") {
+      throw new Error(
+        `Firebase Authentication configuration error: ${fbStatus.message}. Cannot fall back to local mode in production.`
+      );
+    }
+  }
+
   if (fbStatus.configured && fbStatus.state === "connected") {
     // In Firebase mode, client gets ID token or server exchanges with Firebase Identity REST API
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
-    if (apiKey) {
-      const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, returnSecureToken: true }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.idToken) {
-        throw new Error(data.error?.message || "Invalid credentials.");
-      }
-
-      const user: AuthUser = {
-        uid: data.localId,
-        email: data.email,
-        displayName: data.displayName || email.split("@")[0],
-        photoURL: null,
-        role: "developer",
-        creditAllowance: 100,
-        creditsUsed: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        authProvider: "firebase",
-      };
-
-      const token = createDevSessionToken(user);
-      return { user, token };
+    if (!apiKey) {
+      throw new Error(
+        "FIREBASE_API_KEY or NEXT_PUBLIC_FIREBASE_API_KEY is required for Firebase email/password login."
+      );
     }
+
+    const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: true }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.idToken) {
+      throw new Error(data.error?.message || "Invalid credentials.");
+    }
+
+    const user: AuthUser = {
+      uid: data.localId,
+      email: data.email,
+      displayName: data.displayName || email.split("@")[0],
+      photoURL: null,
+      role: "developer",
+      creditAllowance: 100,
+      creditsUsed: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      authProvider: "firebase",
+    };
+
+    const token = createDevSessionToken(user);
+    return { user, token };
+  }
+
+  // If Firebase was configured but failed to connect, fail closed!
+  if (fbStatus.configured && fbStatus.state === "failed") {
+    throw new Error(
+      `Firebase Authentication is configured but unavailable: ${fbStatus.message}. Login blocked.`
+    );
+  }
+
+  // Local filesystem fallback: prohibited in production mode unless explicitly opted in
+  if (process.env.NODE_ENV === "production" && process.env.REWIND_ALLOW_LOCAL_AUTH_IN_PROD !== "true") {
+    throw new Error(
+      "Local filesystem authentication is prohibited in production mode without explicit REWIND_ALLOW_LOCAL_AUTH_IN_PROD opt-in."
+    );
   }
 
   // Development mode: verify against .rewind_store/auth/users.json

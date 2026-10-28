@@ -7,6 +7,13 @@ import {
   getProjectCreditBalance,
 } from "@/server/ai/dualAccounting";
 import { getContextRoots } from "@/server/workspaceContext";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
@@ -14,6 +21,12 @@ export async function GET(request: Request) {
     const projectIdParam = searchParams.get("projectId") || undefined;
     const { storeRoot } = getContextRoots(projectIdParam);
     const activeProjectId = projectIdParam || "demo-workspace";
+
+    // If querying a specific non-demo project's status, assert access
+    if (projectIdParam && projectIdParam !== "demo-workspace") {
+      const user = await requireAuthenticatedUser(request, storeRoot);
+      assertProjectAccess(user, projectIdParam, storeRoot, "read");
+    }
 
     const status = await checkNebiusStatus();
     const activeProvider = getActiveProvider();
@@ -52,19 +65,21 @@ export async function GET(request: Request) {
       },
     });
   } catch (err: unknown) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     const config = getAIConfig();
     const msg = err instanceof Error ? err.message : "Error checking AI status";
     return NextResponse.json(
       {
         status: {
           state: "failed",
-          provider: config.provider,
-          model: config.model,
-          baseUrl: config.baseUrl,
-          endpointReachable: false,
-          credentialsAccepted: false,
-          modelListed: false,
-          generationVerified: false,
+          provider: getActiveProvider(),
+          configured: Boolean(config.apiKey),
           message: msg,
         },
       },
