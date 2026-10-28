@@ -31,6 +31,10 @@ import { POST as demoBreakPost } from "../src/app/api/actions/demo-break/route";
 import { POST as validatePost } from "../src/app/api/actions/validate/route";
 import { GET as aiStatusGet } from "../src/app/api/ai/status/route";
 import { GET as limitsGet } from "../src/app/api/system/limits/route";
+import { GET as auditGet } from "../src/app/api/audit/route";
+import { POST as authGooglePost } from "../src/app/api/auth/google/route";
+import { GET as workspaceFilesGet } from "../src/app/api/workspace/files/route";
+import { GET as workspaceFileGet } from "../src/app/api/workspace/file/route";
 
 describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolation Suite", () => {
   let tempBaseDir: string;
@@ -755,5 +759,202 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     for (let i = 0; i < 8; i++) {
       assert.ok(data.projects.some((p: { name: string }) => p.name === `Concurrent App ${i}`));
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. Comprehensive Two-User Isolation & Google Social Login Suite
+  // -------------------------------------------------------------------------
+  it("10.1. strictly isolates projects, files, snapshots, chat, memories, audit, and credits between two users", async () => {
+    // 1. Register User Alice and User Bob
+    const alice = await registerUser(
+      { email: "alice_iso@example.com", password: "Password123!", displayName: "Alice Iso" },
+      testStore
+    );
+    const bob = await registerUser(
+      { email: "bob_iso@example.com", password: "Password123!", displayName: "Bob Iso" },
+      testStore
+    );
+
+    // 2. Alice creates Alice Project
+    const createProjReq = new Request("http://localhost/api/projects", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${alice.token}`,
+      },
+      body: JSON.stringify({ name: "Alice Confidential App", template: "empty" }),
+    });
+    const createProjRes = await projectsPost(createProjReq);
+    assert.strictEqual(createProjRes.status, 200);
+    const { project: aliceProj } = await createProjRes.json();
+
+    // Alice creates a chat session
+    const chatSessReq = new Request("http://localhost/api/chat/sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${alice.token}`,
+      },
+      body: JSON.stringify({ projectId: aliceProj.id, title: "Secret Architecture" }),
+    });
+    const chatSessRes = await chatSessionsPost(chatSessReq);
+    assert.strictEqual(chatSessRes.status, 201);
+    const { session: aliceSession } = await chatSessRes.json();
+
+    // Alice creates a memory
+    const memReq = new Request(`http://localhost/api/projects/${aliceProj.id}/memories`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${alice.token}`,
+      },
+      body: JSON.stringify({
+        title: "Confidential Decision",
+        distilledIntent: "Never expose secret encryption keys",
+        category: "architectural_decision",
+      }),
+    });
+    const memRes = await projectMemoriesPost(memReq, { params: Promise.resolve({ id: aliceProj.id }) });
+    assert.strictEqual(memRes.status, 201);
+
+    // Alice creates a snapshot
+    const snapReq = new Request("http://localhost/api/snapshots", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${alice.token}`,
+      },
+      body: JSON.stringify({ projectId: aliceProj.id, name: "Alice v1.0" }),
+    });
+    const snapRes = await snapshotsPost(snapReq);
+    assert.strictEqual(snapRes.status, 201);
+    const { snapshot: aliceSnapshot } = await snapRes.json();
+
+    // 3. Bob attempts to access Alice's project resources by ID or parameter
+
+    // Bob tries to get Alice's project details -> 403
+    const bobGetProj = new Request(`http://localhost/api/projects/${aliceProj.id}`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobGetProjRes = await projectDetailGet(bobGetProj, { params: Promise.resolve({ id: aliceProj.id }) });
+    assert.strictEqual(bobGetProjRes.status, 403);
+
+    // Bob tries to list Alice's workspace files -> 403
+    const bobListFiles = new Request(`http://localhost/api/workspace/files?projectId=${aliceProj.id}`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobListFilesRes = await workspaceFilesGet(bobListFiles);
+    assert.strictEqual(bobListFilesRes.status, 403);
+
+    // Bob tries to read a file from Alice's project -> 403
+    const bobReadFile = new Request(`http://localhost/api/workspace/file?path=package.json&projectId=${aliceProj.id}`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobReadFileRes = await workspaceFileGet(bobReadFile);
+    assert.strictEqual(bobReadFileRes.status, 403);
+
+    // Bob tries to list Alice's chat sessions -> 403
+    const bobListChat = new Request(`http://localhost/api/chat/sessions?projectId=${aliceProj.id}`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobListChatRes = await chatSessionsGet(bobListChat);
+    assert.strictEqual(bobListChatRes.status, 403);
+
+    // Bob tries to post a message into Alice's session -> 403
+    const bobPostMsg = new Request("http://localhost/api/chat/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bob.token}`,
+      },
+      body: JSON.stringify({
+        projectId: aliceProj.id,
+        sessionId: aliceSession.id,
+        content: "Malicious injection",
+      }),
+    });
+    const bobPostMsgRes = await chatMessagesPost(bobPostMsg);
+    assert.strictEqual(bobPostMsgRes.status, 403);
+
+    // Bob tries to list Alice's memories -> 403
+    const bobListMem = new Request(`http://localhost/api/projects/${aliceProj.id}/memories`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobListMemRes = await projectMemoriesGet(bobListMem, { params: Promise.resolve({ id: aliceProj.id }) });
+    assert.strictEqual(bobListMemRes.status, 403);
+
+    // Bob tries to restore Alice's snapshot -> 403
+    const bobRestore = new Request(`http://localhost/api/snapshots/${aliceSnapshot.id}/restore`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bob.token}`,
+      },
+      body: JSON.stringify({ projectId: aliceProj.id }),
+    });
+    const bobRestoreRes = await snapshotRestorePost(bobRestore, { params: Promise.resolve({ id: aliceSnapshot.id }) });
+    assert.strictEqual(bobRestoreRes.status, 403);
+
+    // Bob tries to inspect Alice's audit history directly with ?projectId -> 403
+    const bobAuditProj = new Request(`http://localhost/api/audit?projectId=${aliceProj.id}`, {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobAuditProjRes = await auditGet(bobAuditProj);
+    assert.strictEqual(bobAuditProjRes.status, 403);
+
+    // Bob calls global GET /api/audit -> must NOT leak any of Alice's project actions
+    const bobGlobalAudit = new Request("http://localhost/api/audit", {
+      headers: { Authorization: `Bearer ${bob.token}` },
+    });
+    const bobGlobalAuditRes = await auditGet(bobGlobalAudit);
+    assert.strictEqual(bobGlobalAuditRes.status, 200);
+    const bobAuditData = await bobGlobalAuditRes.json();
+    assert.ok(
+      !bobAuditData.actions.some((a: { projectId?: string }) => a.projectId === aliceProj.id),
+      "Bob's audit log must not leak Alice's project actions"
+    );
+  });
+
+  it("10.2. supports Google sign-in endpoint and enforces validation & rate limiting", async () => {
+    clearRateLimitStore();
+
+    // Rejects empty ID token -> 400
+    const emptyReq = new Request("http://localhost/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken: "" }),
+    });
+    const emptyRes = await authGooglePost(emptyReq);
+    assert.strictEqual(emptyRes.status, 400);
+
+    // Accepts valid token in dev mode
+    const validReq = new Request("http://localhost/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken: "mock-google-id-token-valid-2026" }),
+    });
+    const validRes = await authGooglePost(validReq);
+    assert.strictEqual(validRes.status, 200);
+    const validData = await validRes.json();
+    assert.strictEqual(validData.user.authProvider, "google");
+    assert.strictEqual(validData.user.role, "developer");
+    assert.ok(validRes.headers.get("Set-Cookie"));
+
+    // Rate limiting blocks beyond 10 attempts
+    for (let i = 0; i < 10; i++) {
+      const floodReq = new Request("http://localhost/api/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.99" },
+        body: JSON.stringify({ idToken: `flood-${i}` }),
+      });
+      await authGooglePost(floodReq);
+    }
+    const blockedReq = new Request("http://localhost/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.99" },
+      body: JSON.stringify({ idToken: "flood-blocked" }),
+    });
+    const blockedRes = await authGooglePost(blockedReq);
+    assert.strictEqual(blockedRes.status, 429);
   });
 });

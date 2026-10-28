@@ -15,7 +15,7 @@ export interface AuthUser {
   creditsUsed: number;
   createdAt: string;
   updatedAt: string;
-  authProvider: "firebase" | "development";
+  authProvider: "firebase" | "development" | "google" | "github";
 }
 
 export interface AuthSession {
@@ -24,7 +24,7 @@ export interface AuthSession {
   role: UserRole;
   expiresAt: number;
   createdAt: number;
-  authProvider: "firebase" | "development";
+  authProvider: "firebase" | "development" | "google" | "github";
 }
 
 export interface RegisterRequest {

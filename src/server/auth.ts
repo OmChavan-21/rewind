@@ -667,3 +667,93 @@ export async function loginUser(
   const token = createDevSessionToken(user);
   return { user, token };
 }
+
+/**
+ * Authenticates or registers a user via verified Google ID token.
+ */
+export async function authenticateWithGoogleIdToken(
+  idToken: string,
+  storeRoot: string = getDefaultStoreRoot()
+): Promise<{ user: AuthUser; token: string }> {
+  void storeRoot;
+  if (!idToken || typeof idToken !== "string" || !idToken.trim()) {
+    throw new AuthenticationError("A valid Google ID token is required.");
+  }
+
+  const fbStatus = await checkFirebaseStatus();
+  if (isFirebaseRequired()) {
+    if (!fbStatus.configured) {
+      throw new AuthenticationError(
+        "Firebase Authentication is required in this environment, but FIREBASE_PROJECT_ID is not configured."
+      );
+    }
+    if (fbStatus.state === "failed") {
+      throw new AuthenticationError(
+        `Firebase Authentication configuration error: ${fbStatus.message}. Cannot authenticate via Google.`
+      );
+    }
+  }
+
+  if (fbStatus.configured && fbStatus.state === "connected") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require("firebase-admin/auth");
+    let decoded: { uid: string; email?: string; name?: string; picture?: string };
+    try {
+      decoded = await getAuth().verifyIdToken(idToken, true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Invalid Google ID token.";
+      throw new AuthenticationError(`Google authentication failed: ${msg}`);
+    }
+
+    const user: AuthUser = {
+      uid: decoded.uid,
+      email: decoded.email || `${decoded.uid}@google.user`,
+      displayName: decoded.name || decoded.email?.split("@")[0] || "Google Developer",
+      photoURL: decoded.picture || null,
+      role: "developer", // Strictly prevent privilege escalation
+      creditAllowance: 100,
+      creditsUsed: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      authProvider: "google",
+    };
+
+    // Upsert user profile to Firestore
+    const db = await getFirestoreDb();
+    if (db) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (db as any).collection("users").doc(user.uid).set(user, { merge: true });
+    }
+
+    let sessionToken: string;
+    try {
+      sessionToken = await getAuth().createSessionCookie(idToken, { expiresIn: SESSION_TTL_MS });
+    } catch {
+      sessionToken = idToken;
+    }
+
+    return { user, token: sessionToken };
+  }
+
+  // Development/Test mock fallback when Firebase is not required and not connected
+  if (process.env.NODE_ENV === "production" && process.env.REWIND_ALLOW_LOCAL_AUTH_IN_PROD !== "true") {
+    throw new AuthenticationError("Local authentication fallback is prohibited in production mode.");
+  }
+
+  const uid = `usr_google_${crypto.createHash("sha256").update(idToken).digest("hex").slice(0, 10)}`;
+  const user: AuthUser = {
+    uid,
+    email: "google-dev@rewind.local",
+    displayName: "Google Developer",
+    photoURL: null,
+    role: "developer",
+    creditAllowance: 100,
+    creditsUsed: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    authProvider: "google",
+  };
+
+  const sessionToken = createDevSessionToken(user);
+  return { user, token: sessionToken };
+}
