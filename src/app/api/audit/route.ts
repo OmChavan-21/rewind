@@ -4,11 +4,13 @@ import { getAuditHistory } from "@/engine/recoveryEngine";
 import { listProjects } from "@/engine/projectManager";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import type { AgentAction } from "@/types/recovery";
 
 export async function GET(request: Request) {
   try {
@@ -18,10 +20,17 @@ export async function GET(request: Request) {
     const user = await requireAuthenticatedUser(request, storeRoot);
 
     if (projectIdParam && projectIdParam !== "demo-workspace") {
-      assertProjectAccess(user, projectIdParam, storeRoot, "read");
+      await assertProjectAccessAsync(user, projectIdParam, storeRoot, "read");
     }
 
-    const allActions = getAuditHistory(storeRoot);
+    const provider = getStorageProvider(storeRoot);
+
+    if (provider.mode === "cloud") {
+      const actions = await provider.audit.listAuditHistory(projectIdParam, user.uid);
+      return NextResponse.json({ actions, ...(projectIdParam ? { projectId: projectIdParam } : {}) });
+    }
+
+    const allActions: AgentAction[] = getAuditHistory(storeRoot);
 
     // If a specific project was requested, return only its actions
     if (projectIdParam) {
@@ -55,6 +64,9 @@ export async function GET(request: Request) {
       error instanceof NotFoundError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Internal server error";
     return NextResponse.json({ error: message }, { status: 500 });

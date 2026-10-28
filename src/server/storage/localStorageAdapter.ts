@@ -76,12 +76,10 @@ export class LocalStorageAdapter implements IStorageProvider {
       async listProjects(userId?: string): Promise<ProjectSummary> {
         return localListProjects(storeRoot, userId);
       },
-      async getProject(projectId: string, userId?: string): Promise<ProjectMetadata | null> {
+      async getProject(projectId: string, _userId?: string): Promise<ProjectMetadata | null> {
+        void _userId;
         const proj = localGetProject(projectId, storeRoot);
         if (!proj) return null;
-        if (userId && !proj.isDefault && proj.userId && proj.userId !== userId) {
-          return null;
-        }
         return proj;
       },
       async saveProject(project: ProjectMetadata, userId?: string): Promise<void> {

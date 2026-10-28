@@ -28,11 +28,13 @@ import { atomicWriteFileSync, appendAuditAction } from "@/engine/storage";
 import { ingestDocument } from "@/server/ragService";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import type { AgentAction, PermittedFile } from "@/types/recovery";
 
 export class StreamPayloadTooLargeError extends Error {
   constructor(limitBytes: number) {
@@ -275,7 +277,7 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(targetProjectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
     const currentStats = getDirectorySizeBytes(workspaceRoot);
     const dynamicLimits = computeDynamicLimits(currentStats.totalBytes);
 
@@ -348,13 +350,18 @@ export async function POST(request: Request) {
     );
 
     // 4. Safe atomic writes to designated project workspace
+    const provider = getStorageProvider(storeRoot);
     const writtenFiles: string[] = [];
     for (const vf of validatedFiles) {
-      const parentDir = path.dirname(vf.canonicalPath);
-      if (!fs.existsSync(parentDir)) {
-        fs.mkdirSync(parentDir, { recursive: true });
+      if (provider.mode === "cloud") {
+        await provider.workspace.saveUploadedFile(projectId, vf.relPath, vf.buffer, user.uid);
+      } else {
+        const parentDir = path.dirname(vf.canonicalPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+        atomicWriteFileSync(vf.canonicalPath, vf.buffer);
       }
-      atomicWriteFileSync(vf.canonicalPath, vf.buffer);
       writtenFiles.push(vf.relPath);
     }
 
@@ -376,7 +383,7 @@ export async function POST(request: Request) {
     }
 
     // 6. Record audit action
-    appendAuditAction(storeRoot, {
+    const auditRecord: AgentAction = {
       id: `act_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
       timestamp: new Date().toISOString(),
       actionType: "file_upload",
@@ -389,9 +396,22 @@ export async function POST(request: Request) {
         ragIndexedFiles,
         ragErrors: ragErrors.length > 0 ? ragErrors : undefined,
       },
-    });
+      projectId,
+      userId: user.uid,
+    };
 
-    const updatedFiles = listPermittedWorkspaceFiles(workspaceRoot);
+    if (provider.mode === "cloud") {
+      await provider.audit.recordAction(auditRecord, user.uid, projectId);
+    } else {
+      appendAuditAction(storeRoot, auditRecord);
+    }
+
+    let updatedFiles: PermittedFile[];
+    if (provider.mode === "cloud") {
+      updatedFiles = await provider.workspace.listFiles(projectId, user.uid);
+    } else {
+      updatedFiles = listPermittedWorkspaceFiles(workspaceRoot);
+    }
 
     const ragWarning = ragErrors.length > 0
       ? ` (Note: RAG indexing failed for: ${ragErrors.map((e) => e.file).join(", ")})`
@@ -424,6 +444,9 @@ export async function POST(request: Request) {
     }
     if (error instanceof SecurityError || error instanceof FileTooLargeError) {
       return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Internal error during file upload";
     return NextResponse.json({ error: message }, { status: 500 });

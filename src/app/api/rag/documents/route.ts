@@ -4,11 +4,12 @@ import { loadProjectVectorStore } from "@/server/ragService";
 import { SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 
 export async function GET(request: Request) {
   try {
@@ -17,7 +18,21 @@ export async function GET(request: Request) {
 
     const { projectId, storeRoot } = getContextRoots(projId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
+
+    const provider = getStorageProvider(storeRoot);
+
+    if (provider.mode === "cloud") {
+      const documents = await provider.rag.listDocuments(projectId, user.uid);
+      return NextResponse.json({
+        projectId,
+        embeddingModel: "deterministic_projection_128",
+        vectorDimensions: 128,
+        documents,
+        totalChunks: documents.reduce((sum, d) => sum + (d.chunkCount || 0), 0),
+        updatedAt: new Date().toISOString(),
+      });
+    }
 
     const store = loadProjectVectorStore(projectId, storeRoot);
 
@@ -39,6 +54,9 @@ export async function GET(request: Request) {
     }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Error listing RAG documents";
     return NextResponse.json({ error: message }, { status: 500 });

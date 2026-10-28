@@ -38,6 +38,30 @@ service cloud.firestore {
         match /chunks/{chunkId} {
           allow read, write: if isOwner(userId);
         }
+
+        // Project chat sessions & messages
+        match /chatSessions/{sessionId} {
+          allow read, write: if isOwner(userId);
+
+          match /messages/{messageId} {
+            allow read, write: if isOwner(userId);
+          }
+        }
+
+        // Project memory membrane
+        match /memories/{memoryId} {
+          allow read, write: if isOwner(userId);
+        }
+      }
+
+      // User audit history
+      match /audit/{actionId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // User project credit ledger
+      match /credits/{projectId} {
+        allow read, write: if isOwner(userId);
       }
     }
 

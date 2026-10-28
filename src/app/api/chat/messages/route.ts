@@ -1,17 +1,19 @@
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import { getContextRoots } from "@/server/workspaceContext";
-import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
+import { addChatMessage } from "@/engine/chatMemoryStore";
 import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
 import { syncChatMessageToFirebase } from "@/server/firebaseService";
 import { SecurityError } from "@/security/boundaries";
-import type { ChatRole } from "@/types/chat";
+import type { ChatRole, ChatMessage } from "@/types/chat";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 
 export async function POST(request: Request) {
   try {
@@ -40,10 +42,12 @@ export async function POST(request: Request) {
 
     const { storeRoot } = getContextRoots(projectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
+
+    const provider = getStorageProvider(storeRoot);
 
     // Verify session exists and belongs to user
-    const session = getChatSession(projectId, sessionId, storeRoot, user.uid);
+    const session = await provider.chatMemories.getSession(projectId, sessionId, user.uid);
     if (!session) {
       return NextResponse.json(
         { error: `Chat session '${sessionId}' not found in project '${projectId}'.` },
@@ -52,22 +56,39 @@ export async function POST(request: Request) {
     }
 
     // Save message
-    const savedMessage = addChatMessage(
-      projectId,
-      sessionId,
-      {
+    let savedMessage: ChatMessage;
+    if (provider.mode === "local") {
+      savedMessage = addChatMessage(
+        projectId,
+        sessionId,
+        {
+          role,
+          content,
+          reasoning,
+          proposalId,
+          tokenUsage: body.tokenUsage,
+        },
+        storeRoot,
+        user.uid
+      );
+      // Sync message to Firestore if configured
+      await syncChatMessageToFirebase(user.uid, projectId, sessionId, savedMessage).catch(() => {});
+    } else {
+      const messageId = `msg_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+      savedMessage = {
+        id: messageId,
+        sessionId,
+        projectId,
         role,
         content,
         reasoning,
         proposalId,
         tokenUsage: body.tokenUsage,
-      },
-      storeRoot,
-      user.uid
-    );
-
-    // Sync message to Firestore if configured
-    await syncChatMessageToFirebase(user.uid, projectId, sessionId, savedMessage).catch(() => {});
+        createdAt: new Date().toISOString(),
+        userId: user.uid,
+      };
+      await provider.chatMemories.appendMessage(projectId, sessionId, savedMessage, user.uid);
+    }
 
     // If role is user, distill core intentions into project membrane
     let extractedMemories: unknown[] = [];
@@ -101,8 +122,11 @@ export async function POST(request: Request) {
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }
+    if (err instanceof StorageError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.statusCode });
+    }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to post message" },
+      { error: err instanceof Error ? err.message : "Failed to send message" },
       { status: 500 }
     );
   }

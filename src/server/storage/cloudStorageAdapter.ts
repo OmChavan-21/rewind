@@ -126,9 +126,15 @@ export class CloudStorageAdapter implements IStorageProvider {
   private injectedDb: FirestoreClient | null = null;
   private injectedBucket: StorageBucket | null = null;
 
-  constructor(options?: { db?: unknown; bucket?: unknown }) {
-    if (options?.db) this.injectedDb = options.db as FirestoreClient;
-    if (options?.bucket) this.injectedBucket = options.bucket as StorageBucket;
+  constructor(optionsOrDb?: { db?: unknown; bucket?: unknown } | unknown, maybeBucket?: unknown) {
+    if (optionsOrDb && typeof optionsOrDb === "object" && ("db" in optionsOrDb || "bucket" in optionsOrDb)) {
+      const opts = optionsOrDb as { db?: unknown; bucket?: unknown };
+      if (opts.db) this.injectedDb = opts.db as FirestoreClient;
+      if (opts.bucket) this.injectedBucket = opts.bucket as StorageBucket;
+    } else {
+      if (optionsOrDb) this.injectedDb = optionsOrDb as FirestoreClient;
+      if (maybeBucket) this.injectedBucket = maybeBucket as StorageBucket;
+    }
   }
 
   private async getDb(): Promise<FirestoreClient> {

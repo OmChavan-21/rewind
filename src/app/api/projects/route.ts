@@ -1,21 +1,31 @@
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import {
-  listProjects,
   createProject,
 } from "@/engine/projectManager";
 import { getDefaultStoreRoot } from "@/engine/recoveryEngine";
 import { syncProjectToFirebase } from "@/server/firebaseService";
-import { requireAuthenticatedUser, AuthenticationError, ForbiddenError } from "@/server/auth";
+import {
+  requireAuthenticatedUser,
+  AuthenticationError,
+  ForbiddenError,
+} from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import type { ProjectMetadata } from "@/types/project";
 
 export async function GET(request: Request) {
   try {
     const storeRoot = getDefaultStoreRoot();
     const user = await requireAuthenticatedUser(request, storeRoot);
-    const summary = listProjects(storeRoot, user.uid);
+    const provider = getStorageProvider(storeRoot);
+    const summary = await provider.projects.listProjects(user.uid);
     return NextResponse.json(summary);
   } catch (error: unknown) {
     if (error instanceof AuthenticationError) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Failed to list projects";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -38,12 +48,38 @@ export async function POST(request: Request) {
       );
     }
 
-    const newProject = createProject({ name, description, template }, storeRoot, user.uid);
+    const provider = getStorageProvider(storeRoot);
+    let newProject: ProjectMetadata;
 
-    // Sync to Firebase if configured
-    await syncProjectToFirebase(user.uid, newProject).catch(() => {});
+    if (provider.mode === "local") {
+      newProject = createProject({ name, description, template }, storeRoot, user.uid);
+      await syncProjectToFirebase(user.uid, newProject).catch(() => {});
+    } else {
+      const slug = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 30);
+      const uniqueId = `proj_${slug || "workspace"}_${crypto.randomBytes(3).toString("hex")}`;
+      newProject = {
+        id: uniqueId,
+        name,
+        description,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        workspacePath: `projects/${uniqueId}`,
+        fileCount: 1,
+        totalSizeBytes: 0,
+        snapshotCount: 0,
+        status: "active",
+        userId: user.uid,
+      };
+      await provider.projects.saveProject(newProject, user.uid);
+      const starterReadme = `# ${name}\n\n${description || "Created with Rewind."}\n\nWorkspace initialized: ${new Date().toISOString()}\n`;
+      await provider.workspace.writeFile(newProject.id, "README.md", starterReadme, user.uid);
+    }
 
-    const summary = listProjects(storeRoot, user.uid);
+    const summary = await provider.projects.listProjects(user.uid);
     return NextResponse.json({
       project: newProject,
       activeProjectId: newProject.id,
@@ -55,6 +91,9 @@ export async function POST(request: Request) {
     }
     if (error instanceof ForbiddenError) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Failed to create project";
     return NextResponse.json({ error: message }, { status: 400 });

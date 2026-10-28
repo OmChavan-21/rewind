@@ -21,7 +21,10 @@ export function setStorageProviderForTesting(provider: IStorageProvider | null):
  * Production environments strictly require cloud storage unless local storage is explicitly allowed.
  */
 export function isCloudStorageRequired(): boolean {
-  if (process.env.REWIND_STORAGE_PROVIDER === "cloud") {
+  if (
+    process.env.REQUIRE_CLOUD_STORAGE === "true" ||
+    process.env.REWIND_STORAGE_PROVIDER === "cloud"
+  ) {
     return true;
   }
   if (

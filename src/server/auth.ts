@@ -7,6 +7,7 @@ import { getDefaultStoreRoot } from "../engine/recoveryEngine";
 import { atomicWriteFileSync } from "../engine/storage";
 import { getProject, DEFAULT_PROJECT_ID } from "../engine/projectManager";
 import { checkFirebaseStatus, getFirestoreDb } from "./firebaseService";
+import { getStorageProvider } from "./storage/storageProvider";
 
 export class AuthenticationError extends Error {
   readonly statusCode = 401;
@@ -47,7 +48,10 @@ interface StoredDevUser {
 }
 
 const SESSION_COOKIE_NAME = "rewind_session";
-const DEV_SESSION_SECRET = process.env.AUTH_SESSION_SECRET || "rewind-session-signing-secret-safe-dev-key-2026";
+const DEV_SESSION_SECRET =
+  process.env.AUTH_SESSION_SECRET ||
+  process.env.SESSION_SECRET ||
+  "rewind-session-signing-secret-safe-dev-key-2026";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function getAuthStorePath(storeRoot: string): string {
@@ -291,7 +295,10 @@ export async function getAuthenticatedUser(
  * Determines whether Firebase Authentication is required in the active environment.
  */
 export function isFirebaseRequired(): boolean {
-  if (process.env.AUTH_REQUIRE_FIREBASE === "true") {
+  if (
+    process.env.AUTH_REQUIRE_FIREBASE === "true" ||
+    process.env.REQUIRE_FIREBASE === "true"
+  ) {
     return true;
   }
   if (process.env.NODE_ENV === "production") {
@@ -380,6 +387,34 @@ export function assertProjectAccess(
   }
 
   // User-created projects require ownership
+  if (project.userId && project.userId !== user.uid) {
+    throw new ForbiddenError(`You do not have permission to access project '${projectId}'.`);
+  }
+
+  return project;
+}
+
+/**
+ * Asynchronously asserts that user has permission to access a project via the active storage provider.
+ * Supports cloud Firestore multi-tenant project lookup and local store lookup.
+ */
+export async function assertProjectAccessAsync(
+  user: AuthUser,
+  projectId: string,
+  storeRoot: string = getDefaultStoreRoot(),
+  _requiredAccess: "read" | "write" = "read"
+): Promise<ProjectMetadata> {
+  void _requiredAccess;
+  const provider = getStorageProvider(storeRoot);
+  const project = await provider.projects.getProject(projectId, user.uid);
+  if (!project) {
+    throw new NotFoundError(`Project '${projectId}' not found.`);
+  }
+
+  if (project.id === DEFAULT_PROJECT_ID) {
+    return project;
+  }
+
   if (project.userId && project.userId !== user.uid) {
     throw new ForbiddenError(`You do not have permission to access project '${projectId}'.`);
   }

@@ -59,6 +59,7 @@ export type ActionType =
 export interface AgentAction {
   id: string;
   projectId?: string;
+  userId?: string;
   timestamp: string;
   actionType: ActionType;
   targetPath?: string;

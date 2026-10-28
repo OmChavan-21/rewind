@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Rewind mediates all file uploads, reads, and snapshots via authenticated backend serverless functions using Firebase Admin SDK.
+    // Direct client SDK access to the storage bucket is strictly denied by default.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

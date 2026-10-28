@@ -11,11 +11,12 @@ import type { MemoryCategory, ProjectMemory } from "@/types/memory";
 import crypto from "node:crypto";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 
 export async function GET(
   request: Request,
@@ -26,12 +27,23 @@ export async function GET(
     const { storeRoot } = getContextRoots(projectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
 
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
 
     const { searchParams } = new URL(request.url);
     const activeOnly = searchParams.get("activeOnly") !== "false";
 
-    const memories = listProjectMemories(projectId, storeRoot, user.uid, activeOnly);
+    const provider = getStorageProvider(storeRoot);
+    let memories: ProjectMemory[];
+
+    if (provider.mode === "local") {
+      memories = listProjectMemories(projectId, storeRoot, user.uid, activeOnly);
+    } else {
+      memories = await provider.chatMemories.listMemories(projectId, undefined, user.uid);
+      if (activeOnly) {
+        memories = memories.filter((m) => m.isActive);
+      }
+    }
+
     return NextResponse.json({ memories, projectId });
   } catch (err) {
     if (
@@ -43,6 +55,9 @@ export async function GET(
     }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    if (err instanceof StorageError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.statusCode });
     }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to list project memories" },
@@ -60,7 +75,7 @@ export async function POST(
     const { storeRoot } = getContextRoots(projectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
 
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
     const body = await request.json().catch(() => ({}));
 
@@ -70,7 +85,20 @@ export async function POST(
       if (!memoryId) {
         return NextResponse.json({ error: "memoryId is required to deactivate." }, { status: 400 });
       }
-      const deactivated = deactivateProjectMemory(projectId, memoryId, storeRoot, user.uid);
+      const provider = getStorageProvider(storeRoot);
+      let deactivated = false;
+      if (provider.mode === "local") {
+        deactivated = deactivateProjectMemory(projectId, memoryId, storeRoot, user.uid);
+      } else {
+        const mems = await provider.chatMemories.listMemories(projectId, undefined, user.uid);
+        const existing = mems.find((m) => m.id === memoryId);
+        if (existing) {
+          existing.isActive = false;
+          existing.updatedAt = new Date().toISOString();
+          await provider.chatMemories.saveMemory(projectId, existing, user.uid);
+          deactivated = true;
+        }
+      }
       return NextResponse.json({ success: deactivated, memoryId });
     }
 
@@ -114,9 +142,16 @@ export async function POST(
       updatedAt: now,
     };
 
-    const saved = saveProjectMemory(projectId, memory, storeRoot, user.uid);
-    // Sync memory to Firestore if configured
-    await syncProjectMemoryToFirebase(user.uid, projectId, saved).catch(() => {});
+    const provider = getStorageProvider(storeRoot);
+    let saved = memory;
+    if (provider.mode === "local") {
+      saved = saveProjectMemory(projectId, memory, storeRoot, user.uid);
+      // Sync memory to Firestore if configured
+      await syncProjectMemoryToFirebase(user.uid, projectId, saved).catch(() => {});
+    } else {
+      await provider.chatMemories.saveMemory(projectId, memory, user.uid);
+    }
+
     return NextResponse.json({ memory: saved }, { status: 201 });
   } catch (err) {
     if (
@@ -128,6 +163,9 @@ export async function POST(
     }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    if (err instanceof StorageError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.statusCode });
     }
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to modify memory" },

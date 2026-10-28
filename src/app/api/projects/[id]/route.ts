@@ -1,16 +1,14 @@
 import { NextResponse } from "next/server";
-import {
-  setActiveProject,
-  listProjectSnapshots,
-} from "@/engine/projectManager";
+import { setActiveProject } from "@/engine/projectManager";
 import { getDefaultStoreRoot } from "@/engine/recoveryEngine";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 
 export async function GET(
   request: Request,
@@ -21,8 +19,9 @@ export async function GET(
     const storeRoot = getDefaultStoreRoot();
     const user = await requireAuthenticatedUser(request, storeRoot);
 
-    const project = assertProjectAccess(user, params.id, storeRoot, "read");
-    const snapshots = listProjectSnapshots(params.id, storeRoot);
+    const project = await assertProjectAccessAsync(user, params.id, storeRoot, "read");
+    const provider = getStorageProvider(storeRoot);
+    const snapshots = await provider.snapshots.listSnapshots(params.id, user.uid);
 
     return NextResponse.json({
       project,
@@ -35,6 +34,9 @@ export async function GET(
       error instanceof NotFoundError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Failed to fetch project";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -50,8 +52,13 @@ export async function POST(
     const storeRoot = getDefaultStoreRoot();
     const user = await requireAuthenticatedUser(request, storeRoot);
 
-    assertProjectAccess(user, params.id, storeRoot, "write");
-    const activeProject = setActiveProject(params.id, storeRoot);
+    const project = await assertProjectAccessAsync(user, params.id, storeRoot, "write");
+    const provider = getStorageProvider(storeRoot);
+    let activeProject = project;
+
+    if (provider.mode === "local") {
+      activeProject = setActiveProject(params.id, storeRoot);
+    }
 
     return NextResponse.json({
       message: `Active project switched to '${activeProject.name}'`,
@@ -64,6 +71,9 @@ export async function POST(
       error instanceof NotFoundError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Failed to set active project";
     return NextResponse.json({ error: message }, { status: 400 });
