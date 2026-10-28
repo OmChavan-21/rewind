@@ -3,7 +3,7 @@ import { getContextRoots } from "@/server/workspaceContext";
 import { validateWorkspace } from "@/engine/recoveryEngine";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
 } from "@/server/auth";
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   try {
     const { workspaceRoot, storeRoot, projectId } = getContextRoots();
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
 
     const validation = validateWorkspace(workspaceRoot, storeRoot);
 

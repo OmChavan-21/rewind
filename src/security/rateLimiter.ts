@@ -180,7 +180,18 @@ export function extractClientIp(request: Request): string {
 }
 
 /**
+ * Checks whether distributed rate limiting is mandated by the environment.
+ */
+export function isDistributedRateLimitRequired(): boolean {
+  return (
+    process.env.REQUIRE_DISTRIBUTED_RATE_LIMIT === "true" ||
+    process.env.REWIND_REQUIRE_DISTRIBUTED_RATE_LIMIT === "true"
+  );
+}
+
+/**
  * Enforces rate limiting on a sensitive route. Supports distributed Vercel KV/Upstash and local in-memory fallback.
+ * Fails closed with 503 if distributed rate limiting is required but unavailable.
  */
 export async function enforceRateLimitAsync(
   request: Request,
@@ -197,6 +208,23 @@ export async function enforceRateLimitAsync(
 
   // Try distributed rate limiter first
   const distributedResult = await checkDistributedRateLimit(key, maxRequests, windowMs);
+
+  // If distributed rate limiting is strictly required but unavailable, fail closed
+  if (isDistributedRateLimitRequired() && !distributedResult) {
+    return NextResponse.json(
+      {
+        error: "Distributed rate limiting is required in this environment but is unavailable or misconfigured.",
+        code: "RATE_LIMIT_SERVICE_UNAVAILABLE",
+      },
+      {
+        status: 503,
+        headers: {
+          "Retry-After": "60",
+        },
+      }
+    );
+  }
+
   const result = distributedResult || checkRateLimit(key, maxRequests, windowMs);
 
   if (!result.allowed) {

@@ -5,7 +5,7 @@ import { checkFirebaseStatus } from "@/server/firebaseService";
 import { getRAGProcessingStatus } from "@/server/ragService";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
     // If querying specific non-demo project limits, assert access
     if (projId && projId !== "demo-workspace") {
       const user = await requireAuthenticatedUser(request, storeRoot);
-      assertProjectAccess(user, projId, storeRoot, "read");
+      await assertProjectAccessAsync(user, projId, storeRoot, "read");
     }
 
     const limits = getResourceLimits();

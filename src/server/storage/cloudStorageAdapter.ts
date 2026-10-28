@@ -563,6 +563,17 @@ export class CloudStorageAdapter implements IStorageProvider {
             restoredFiles.push(relPath);
           }
 
+          // Clean up any files that were created in the workspace after this snapshot was taken
+          const [currentWsFiles] = await bucket.getFiles({ prefix: wsPrefix });
+          const targetPaths = new Set(restoredFiles);
+          for (const wsFile of currentWsFiles) {
+            const relPath = wsFile.name.slice(wsPrefix.length);
+            if (!relPath || relPath.endsWith("/")) continue;
+            if (!targetPaths.has(relPath)) {
+              await wsFile.delete().catch(() => {});
+            }
+          }
+
           return { restoredFiles, snapshot };
         } catch (err) {
           throw new StorageError(

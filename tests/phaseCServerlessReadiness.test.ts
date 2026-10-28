@@ -210,6 +210,8 @@ describe("Rewind Phase C - Vercel Serverless Production Readiness & Resilience S
     clearRateLimitStore();
     delete process.env.REQUIRE_CLOUD_STORAGE;
     delete process.env.REWIND_STORAGE_PROVIDER;
+    delete process.env.REQUIRE_DISTRIBUTED_RATE_LIMIT;
+    delete process.env.REWIND_REQUIRE_DISTRIBUTED_RATE_LIMIT;
   });
 
   it("1.1 [Simulated Cloud] simulates separate serverless instances sharing cloud state with zero shared local disk", async () => {
@@ -449,5 +451,59 @@ describe("Rewind Phase C - Vercel Serverless Production Readiness & Resilience S
         return true;
       }
     );
+  });
+
+  it("1.7 [Simulated Outage] fails closed with 503 when distributed rate limiting is mandated but Redis is unreachable", async () => {
+    process.env.REQUIRE_DISTRIBUTED_RATE_LIMIT = "true";
+    // Simulate Redis outage where handler returns null
+    setDistributedHandlerForTesting(async () => null);
+
+    const mockRequest = new Request("http://localhost/api/auth/login", {
+      method: "POST",
+      headers: { "x-forwarded-for": "198.51.100.99" },
+    });
+
+    const res = await enforceRateLimitAsync(mockRequest, "login_strict_rate_test", 5, 60000);
+    assert.ok(res, "Must return response when distributed rate limit fails closed");
+    assert.strictEqual(res.status, 503);
+
+    const body = await res.json();
+    assert.strictEqual(body.code, "RATE_LIMIT_SERVICE_UNAVAILABLE");
+  });
+
+  it("1.8 [Simulated Cloud] ensures snapshot restoration purges files created after the snapshot", async () => {
+    const cloud = createSharedCloudEnvironment();
+    const adapter = new CloudStorageAdapter(cloud.mockFirestore, cloud.mockBucket);
+
+    const projectId = "proj_snapshot_purge_verify";
+    await adapter.workspace.writeFile(projectId, "main.ts", "const original = true;", "user_test");
+
+    const files = new Map<string, string>();
+    files.set("main.ts", "const original = true;");
+
+    const snapshot: Snapshot = {
+      id: "snap_clean",
+      workspaceId: projectId,
+      name: "Clean Snapshot",
+      createdAt: new Date().toISOString(),
+      totalFiles: 1,
+      totalBytes: 25,
+      files: [{ path: "main.ts", hash: "hash_orig", size: 25, modifiedAt: new Date().toISOString() }],
+    };
+
+    await adapter.snapshots.saveSnapshot(projectId, snapshot, files, "user_test");
+
+    // Add extra rogue file after snapshot
+    await adapter.workspace.writeFile(projectId, "rogue_extra.ts", "malicious or stale content", "user_test");
+    const preRestoreFiles = await adapter.workspace.listFiles(projectId, "user_test");
+    assert.strictEqual(preRestoreFiles.length, 2, "Workspace should have 2 files before restoration");
+
+    // Restore snapshot
+    const restoreResult = await adapter.snapshots.restoreSnapshot(projectId, "snap_clean", "user_test");
+    assert.strictEqual(restoreResult.restoredFiles.length, 1);
+
+    const postRestoreFiles = await adapter.workspace.listFiles(projectId, "user_test");
+    assert.strictEqual(postRestoreFiles.length, 1, "Rogue file must have been deleted by snapshot restoration");
+    assert.strictEqual(postRestoreFiles[0].path, "main.ts");
   });
 });

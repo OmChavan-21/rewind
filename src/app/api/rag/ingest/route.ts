@@ -2,15 +2,16 @@ import { NextResponse } from "next/server";
 import fs from "node:fs";
 import { getContextRoots } from "@/server/workspaceContext";
 import { resolveAndValidatePath } from "@/security/boundaries";
-import { ingestDocument } from "@/server/ragService";
+import { ingestDocument, loadProjectVectorStore } from "@/server/ragService";
 import { syncDocumentToFirebase } from "@/server/firebaseService";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 
 export async function POST(request: Request) {
   try {
@@ -27,22 +28,35 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
-    const canonicalPath = resolveAndValidatePath(workspaceRoot, filePath);
+    const provider = getStorageProvider(storeRoot);
+    let buffer: Buffer;
 
-    if (!fs.existsSync(canonicalPath)) {
-      return NextResponse.json(
-        { error: `File '${filePath}' does not exist in workspace.` },
-        { status: 404 }
-      );
+    if (provider.mode === "cloud") {
+      const contentStr = await provider.workspace.readFile(projectId, filePath, user.uid);
+      buffer = Buffer.from(contentStr, "utf-8");
+    } else {
+      const canonicalPath = resolveAndValidatePath(workspaceRoot, filePath);
+      if (!fs.existsSync(canonicalPath)) {
+        return NextResponse.json(
+          { error: `File '${filePath}' does not exist in workspace.` },
+          { status: 404 }
+        );
+      }
+      buffer = fs.readFileSync(canonicalPath);
     }
 
-    const buffer = fs.readFileSync(canonicalPath);
     const ragDoc = await ingestDocument(projectId, filePath, buffer, storeRoot);
 
-    // Sync metadata to Firebase if configured
-    await syncDocumentToFirebase(user.uid, projectId, ragDoc).catch(() => {});
+    if (provider.mode === "cloud") {
+      const store = loadProjectVectorStore(projectId, storeRoot);
+      const docChunks = store.chunks.filter((c) => c.docId === ragDoc.id);
+      await provider.rag.saveDocument(projectId, ragDoc, docChunks, user.uid);
+    } else {
+      // Sync metadata to Firebase if configured
+      await syncDocumentToFirebase(user.uid, projectId, ragDoc).catch(() => {});
+    }
 
     return NextResponse.json({
       success: true,
@@ -56,6 +70,9 @@ export async function POST(request: Request) {
       error instanceof NotFoundError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     const message = error instanceof Error ? error.message : "Error ingesting document into RAG";
     return NextResponse.json({ error: message }, { status: 400 });

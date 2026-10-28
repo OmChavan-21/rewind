@@ -3,7 +3,7 @@ import { getContextRoots } from "@/server/workspaceContext";
 import { introduceDemoFailure } from "@/engine/recoveryEngine";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
 } from "@/server/auth";
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   try {
     const { workspaceRoot, storeRoot, projectId } = getContextRoots();
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
     const body = await request.json().catch(() => ({}));
     const target = body.targetFile === "src/evaluator.ts" ? "src/evaluator.ts" : "agent-workflow.json";

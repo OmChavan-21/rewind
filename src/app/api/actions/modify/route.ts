@@ -4,7 +4,7 @@ import { applyApprovedFileChange } from "@/engine/recoveryEngine";
 import { SecurityError, FileTooLargeError, UnsupportedFileTypeError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
     const result = applyApprovedFileChange(
       workspaceRoot,

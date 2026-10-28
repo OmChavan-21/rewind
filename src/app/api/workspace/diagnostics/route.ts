@@ -4,7 +4,7 @@ import { runWorkspaceDiagnostics } from "@/engine/codeDiagnostics";
 import { SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -17,7 +17,7 @@ export async function GET(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId: activeProjectId } = getContextRoots(projectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, activeProjectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, activeProjectId, storeRoot, "read");
 
     const result = runWorkspaceDiagnostics(workspaceRoot, activeProjectId);
 
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId: activeProjectId } = getContextRoots(projectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, activeProjectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, activeProjectId, storeRoot, "read");
 
     const result = runWorkspaceDiagnostics(workspaceRoot, activeProjectId);
 

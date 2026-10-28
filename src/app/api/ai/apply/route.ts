@@ -4,7 +4,7 @@ import { applyApprovedAIProposal, ConflictError } from "@/server/proposalExecuti
 import { SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(targetProjectId);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
     const result = await applyApprovedAIProposal(workspaceRoot, storeRoot, proposal, { projectId });
 

@@ -4,11 +4,13 @@ import { getSnapshot, compareWorkspaceWithSnapshot } from "@/engine/recoveryEngi
 import { validateSnapshotId, SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import type { FileChange } from "@/types/recovery";
 
 export async function GET(
   request: Request,
@@ -23,7 +25,63 @@ export async function GET(
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
+
+    const provider = getStorageProvider(storeRoot);
+
+    if (provider.mode === "cloud") {
+      const snapshot = await provider.snapshots.getSnapshot(projectId, id, user.uid);
+      if (!snapshot) {
+        return NextResponse.json({ error: `Snapshot '${id}' not found.` }, { status: 404 });
+      }
+
+      // Compute changes between current cloud workspace and snapshot
+      const currentFiles = await provider.workspace.listFiles(projectId, user.uid);
+      const currentMap = new Map(currentFiles.map((f) => [f.path, f.hash]));
+      const snapshotMap = new Map(snapshot.files.map((f) => [f.path, f.hash]));
+
+      const changes: FileChange[] = [];
+
+      for (const snapFile of snapshot.files) {
+        const currHash = currentMap.get(snapFile.path);
+        if (!currHash) {
+          changes.push({
+            path: snapFile.path,
+            type: "deleted",
+            oldHash: snapFile.hash,
+          });
+        } else if (currHash !== snapFile.hash) {
+          changes.push({
+            path: snapFile.path,
+            type: "modified",
+            oldHash: snapFile.hash,
+            newHash: currHash,
+          });
+        } else {
+          changes.push({
+            path: snapFile.path,
+            type: "unchanged",
+            oldHash: snapFile.hash,
+            newHash: currHash,
+          });
+        }
+      }
+
+      for (const currFile of currentFiles) {
+        if (!snapshotMap.has(currFile.path)) {
+          changes.push({
+            path: currFile.path,
+            type: "added",
+            newHash: currFile.hash,
+          });
+        }
+      }
+
+      return NextResponse.json({
+        snapshot,
+        changes,
+      });
+    }
 
     const data = getSnapshot(storeRoot, id);
 
@@ -44,7 +102,7 @@ export async function GET(
       }
     }
 
-    assertProjectAccess(user, snapWorkspace, storeRoot, "read");
+    await assertProjectAccessAsync(user, snapWorkspace, storeRoot, "read");
 
     const changes = compareWorkspaceWithSnapshot(workspaceRoot, storeRoot, id, projectId);
 
@@ -59,6 +117,9 @@ export async function GET(
       error instanceof NotFoundError
     ) {
       return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
     }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });

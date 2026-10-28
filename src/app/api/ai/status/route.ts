@@ -9,7 +9,7 @@ import {
 import { getContextRoots } from "@/server/workspaceContext";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
     // If querying a specific non-demo project's status, assert access
     if (projectIdParam && projectIdParam !== "demo-workspace") {
       const user = await requireAuthenticatedUser(request, storeRoot);
-      assertProjectAccess(user, projectIdParam, storeRoot, "read");
+      await assertProjectAccessAsync(user, projectIdParam, storeRoot, "read");
     }
 
     const status = await checkNebiusStatus();

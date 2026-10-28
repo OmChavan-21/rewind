@@ -7,7 +7,7 @@ import {
 } from "@/engine/recoveryEngine";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
 
     const info = getWorkspaceInfo(workspaceRoot, storeRoot);
     const validation = validateWorkspaceDeterministically(workspaceRoot);
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
 
     initializeDemoWorkspace(workspaceRoot, force);
     const info = getWorkspaceInfo(workspaceRoot, storeRoot);

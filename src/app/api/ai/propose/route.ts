@@ -25,7 +25,7 @@ import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
 import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     activeProjectId = projectIdParam || "demo-workspace";
 
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, activeProjectId, storeRoot, "write");
+    await assertProjectAccessAsync(user, activeProjectId, storeRoot, "write");
 
     const permittedFiles = listPermittedWorkspaceFiles(workspaceRoot);
 

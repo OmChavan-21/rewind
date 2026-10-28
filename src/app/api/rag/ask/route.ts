@@ -4,7 +4,7 @@ import { askProjectQuestion } from "@/server/ragService";
 import { SecurityError } from "@/security/boundaries";
 import {
   requireAuthenticatedUser,
-  assertProjectAccess,
+  assertProjectAccessAsync,
   AuthenticationError,
   ForbiddenError,
   NotFoundError,
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
     const { storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
-    assertProjectAccess(user, projectId, storeRoot, "read");
+    await assertProjectAccessAsync(user, projectId, storeRoot, "read");
 
     const result = await askProjectQuestion(projectId, question, topK);
 
