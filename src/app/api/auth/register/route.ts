@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { registerUser, createSessionCookieHeader } from "@/server/auth";
 import { getDefaultStoreRoot } from "@/engine/recoveryEngine";
-import { enforceRateLimit } from "@/security/rateLimiter";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 
 export async function POST(request: Request) {
-  const rateLimitRes = enforceRateLimit(request, "auth_register", 10, 60_000);
+  const rateLimitRes = await enforceRateLimitAsync(request, "auth_register", 10, 60_000);
   if (rateLimitRes) {
     return rateLimitRes;
   }

@@ -14,6 +14,12 @@ export interface FirebaseConnectionStatus {
 
 // In-memory or fallback admin reference
 let firestoreDbInstance: unknown = null;
+let firebaseStorageBucketInstance: unknown = null;
+
+export function setFirebaseInstancesForTesting(db: unknown, bucket?: unknown) {
+  firestoreDbInstance = db;
+  firebaseStorageBucketInstance = bucket || null;
+}
 
 function sanitizeEnvVal(val?: string): string {
   if (!val) return "";
@@ -61,9 +67,13 @@ export async function getFirestoreDb(): Promise<unknown | null> {
           })
         : applicationDefault();
 
+      const bucketName =
+        sanitizeEnvVal(process.env.FIREBASE_STORAGE_BUCKET) || `${projectId}.appspot.com`;
+
       initializeApp({
         credential,
         projectId,
+        storageBucket: bucketName,
       });
     }
 
@@ -71,6 +81,33 @@ export async function getFirestoreDb(): Promise<unknown | null> {
     return firestoreDbInstance;
   } catch (err) {
     console.error("[Firebase Admin Initialization Error]:", err);
+    return null;
+  }
+}
+
+/**
+ * Initializes and retrieves the Firebase Storage Bucket server-side.
+ */
+export async function getFirebaseStorageBucket(): Promise<unknown | null> {
+  const projectId = sanitizeEnvVal(process.env.FIREBASE_PROJECT_ID);
+  if (!projectId) return null;
+
+  if (firebaseStorageBucketInstance) {
+    return firebaseStorageBucketInstance;
+  }
+
+  // Ensure Firebase App is initialized
+  await getFirestoreDb();
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getStorage } = require("firebase-admin/storage");
+    const bucketName =
+      sanitizeEnvVal(process.env.FIREBASE_STORAGE_BUCKET) || `${projectId}.appspot.com`;
+    firebaseStorageBucketInstance = getStorage().bucket(bucketName);
+    return firebaseStorageBucketInstance;
+  } catch (err) {
+    console.error("[Firebase Storage Initialization Error]:", err);
     return null;
   }
 }
