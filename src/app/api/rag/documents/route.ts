@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { loadProjectVectorStore } from "@/server/ragService";
 import { SecurityError } from "@/security/boundaries";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
@@ -9,6 +16,9 @@ export async function GET(request: Request) {
     const projId = searchParams.get("projectId") || undefined;
 
     const { projectId, storeRoot } = getContextRoots(projId);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "read");
+
     const store = loadProjectVectorStore(projectId, storeRoot);
 
     return NextResponse.json({
@@ -20,6 +30,13 @@ export async function GET(request: Request) {
       updatedAt: store.updatedAt,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }

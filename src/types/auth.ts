@@ -1,0 +1,44 @@
+/**
+ * Authentication and authorization types for Rewind.
+ */
+
+export type UserRole = "admin" | "developer" | "viewer";
+
+export interface AuthUser {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string | null;
+  role: UserRole;
+  activeProjectId?: string;
+  creditAllowance: number;
+  creditsUsed: number;
+  createdAt: string;
+  updatedAt: string;
+  authProvider: "firebase" | "development";
+}
+
+export interface AuthSession {
+  userId: string;
+  email: string;
+  role: UserRole;
+  expiresAt: number;
+  createdAt: number;
+  authProvider: "firebase" | "development";
+}
+
+export interface RegisterRequest {
+  email: string;
+  password: string;
+  displayName?: string;
+}
+
+export interface LoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface AuthResponse {
+  user: AuthUser;
+  token?: string;
+}

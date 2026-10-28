@@ -14,6 +14,7 @@ export interface ProjectMetadata {
   snapshotCount: number;
   status: "active" | "archived";
   isDefault?: boolean;
+  userId?: string;
 }
 
 export interface CreateProjectRequest {

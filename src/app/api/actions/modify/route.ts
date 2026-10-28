@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { applyApprovedFileChange } from "@/engine/recoveryEngine";
 import { SecurityError, FileTooLargeError, UnsupportedFileTypeError } from "@/security/boundaries";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function POST(request: Request) {
   try {
@@ -16,6 +23,9 @@ export async function POST(request: Request) {
     }
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
+
     const result = applyApprovedFileChange(
       workspaceRoot,
       storeRoot,
@@ -31,6 +41,13 @@ export async function POST(request: Request) {
       snapshotBeforeId: result.snapshotBeforeId,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }

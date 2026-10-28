@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
-import { addChatMessage, getChatSession, DEFAULT_USER_ID } from "@/engine/chatMemoryStore";
+import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
 import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
 import { SecurityError } from "@/security/boundaries";
 import type { ChatRole } from "@/types/chat";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function POST(request: Request) {
   try {
@@ -14,7 +21,6 @@ export async function POST(request: Request) {
     const role: ChatRole = body.role === "assistant" ? "assistant" : body.role === "system" ? "system" : "user";
     const reasoning = typeof body.reasoning === "string" ? body.reasoning.trim() : undefined;
     const proposalId = typeof body.proposalId === "string" ? body.proposalId.trim() : undefined;
-    const userId = typeof body.userId === "string" && body.userId.trim() ? body.userId.trim() : DEFAULT_USER_ID;
 
     if (!sessionId) {
       return NextResponse.json({ error: "sessionId is required." }, { status: 400 });
@@ -32,9 +38,11 @@ export async function POST(request: Request) {
     }
 
     const { storeRoot } = getContextRoots(projectId);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
 
     // Verify session exists and belongs to user
-    const session = getChatSession(projectId, sessionId, storeRoot, userId);
+    const session = getChatSession(projectId, sessionId, storeRoot, user.uid);
     if (!session) {
       return NextResponse.json(
         { error: `Chat session '${sessionId}' not found in project '${projectId}'.` },
@@ -54,7 +62,7 @@ export async function POST(request: Request) {
         tokenUsage: body.tokenUsage,
       },
       storeRoot,
-      userId
+      user.uid
     );
 
     // If role is user, distill core intentions into project membrane
@@ -66,7 +74,7 @@ export async function POST(request: Request) {
         messageId: savedMessage.id,
         userPrompt: content,
         storeRoot,
-        userId,
+        userId: user.uid,
       });
       extractedMemories = extraction.extractedMemories;
     }
@@ -79,6 +87,13 @@ export async function POST(request: Request) {
       { status: 201 }
     );
   } catch (err) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }

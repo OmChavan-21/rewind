@@ -23,6 +23,13 @@ import type { SelfRepairResult } from "@/types/ai";
 import { assembleDeveloperContext } from "@/server/ai/contextAssembler";
 import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
 import { extractAndPersistMemories } from "@/server/ai/memoryMembrane";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function POST(request: Request) {
   let reservationId: string | undefined;
@@ -49,6 +56,9 @@ export async function POST(request: Request) {
     const projectIdParam = typeof body.projectId === "string" ? body.projectId.trim() : undefined;
     const { workspaceRoot, storeRoot } = getContextRoots(projectIdParam);
     activeProjectId = projectIdParam || "demo-workspace";
+
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, activeProjectId, storeRoot, "write");
 
     const permittedFiles = listPermittedWorkspaceFiles(workspaceRoot);
 
@@ -271,6 +281,17 @@ export async function POST(request: Request) {
   } catch (err: unknown) {
     if (reservationId) {
       releaseCreditReservation(reservationId);
+    }
+
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json(
+        { error: err.message, category: "unauthorized" },
+        { status: err.statusCode }
+      );
     }
 
     if (err instanceof BudgetExceededError) {

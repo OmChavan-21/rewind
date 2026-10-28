@@ -9,31 +9,41 @@ import {
   Shield,
   UploadCloud,
   FolderGit2,
+  User,
+  LogOut,
+  LogIn,
 } from "lucide-react";
 import type { WorkspaceStatus, ValidationResult } from "@/types/recovery";
+import type { AuthUser } from "@/types/auth";
 
 interface TopBarProps {
   status: WorkspaceStatus;
   validation?: ValidationResult;
   activeProjectId?: string;
+  currentUser?: AuthUser | null;
   onOpenSnapshotModal: () => void;
   onRunValidation: () => void;
   onRefresh: () => void;
   isLoading: boolean;
   onOpenUpload?: () => void;
   onOpenProjectManager?: () => void;
+  onOpenAuthModal?: () => void;
+  onLogout?: () => void;
 }
 
 export function TopBar({
   status,
   validation,
   activeProjectId = "demo-workspace",
+  currentUser,
   onOpenSnapshotModal,
   onRunValidation,
   onRefresh,
   isLoading,
   onOpenUpload,
   onOpenProjectManager,
+  onOpenAuthModal,
+  onLogout,
 }: TopBarProps) {
   const isHealthy = status === "healthy" && (validation?.passed ?? true);
 
@@ -76,7 +86,7 @@ export function TopBar({
         </div>
       </div>
 
-      {/* Right: Quick actions */}
+      {/* Right: Quick actions & Auth */}
       <div className="flex items-center gap-2.5">
         <button
           onClick={onRefresh}
@@ -114,6 +124,40 @@ export function TopBar({
           <Camera className="w-3.5 h-3.5" />
           <span>New Snapshot</span>
         </button>
+
+        {/* User / Auth section */}
+        <div className="h-5 w-[1px] bg-slate-800 mx-1" />
+
+        {currentUser ? (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-300">
+              <User className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="max-w-[120px] truncate">{currentUser.displayName || currentUser.email}</span>
+              <span className="text-[10px] uppercase font-mono px-1 py-0.2 bg-cyan-950 text-cyan-300 rounded border border-cyan-800/60">
+                {currentUser.role}
+              </span>
+            </div>
+            {onLogout && (
+              <button
+                onClick={onLogout}
+                title="Sign out"
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-rose-400 hover:border-rose-900/60 transition"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        ) : (
+          onOpenAuthModal && (
+            <button
+              onClick={onOpenAuthModal}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-semibold border border-slate-700 hover:border-cyan-500/50 transition"
+            >
+              <LogIn className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Sign In</span>
+            </button>
+          )
+        )}
       </div>
     </header>
   );

@@ -4,12 +4,17 @@ import {
   listProjectMemories,
   saveProjectMemory,
   deactivateProjectMemory,
-  DEFAULT_USER_ID,
 } from "@/engine/chatMemoryStore";
-import { getProject } from "@/engine/projectManager";
 import { SecurityError } from "@/security/boundaries";
 import type { MemoryCategory, ProjectMemory } from "@/types/memory";
 import crypto from "node:crypto";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(
   request: Request,
@@ -17,23 +22,24 @@ export async function GET(
 ) {
   try {
     const { id: projectId } = await props.params;
+    const { storeRoot } = getContextRoots(projectId);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+
+    assertProjectAccess(user, projectId, storeRoot, "read");
+
     const { searchParams } = new URL(request.url);
     const activeOnly = searchParams.get("activeOnly") !== "false";
-    const userId = searchParams.get("userId")?.trim() || undefined;
 
-    const { storeRoot } = getContextRoots(projectId);
-
-    const project = getProject(projectId, storeRoot);
-    if (!project) {
-      return NextResponse.json(
-        { error: `Project '${projectId}' not found.` },
-        { status: 404 }
-      );
-    }
-
-    const memories = listProjectMemories(projectId, storeRoot, userId, activeOnly);
+    const memories = listProjectMemories(projectId, storeRoot, user.uid, activeOnly);
     return NextResponse.json({ memories, projectId });
   } catch (err) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }
@@ -50,17 +56,12 @@ export async function POST(
 ) {
   try {
     const { id: projectId } = await props.params;
-    const body = await request.json().catch(() => ({}));
-    const userId = typeof body.userId === "string" && body.userId.trim() ? body.userId.trim() : DEFAULT_USER_ID;
-
     const { storeRoot } = getContextRoots(projectId);
-    const project = getProject(projectId, storeRoot);
-    if (!project) {
-      return NextResponse.json(
-        { error: `Project '${projectId}' not found.` },
-        { status: 404 }
-      );
-    }
+    const user = await requireAuthenticatedUser(request, storeRoot);
+
+    assertProjectAccess(user, projectId, storeRoot, "write");
+
+    const body = await request.json().catch(() => ({}));
 
     // Action: deactivate
     if (body.action === "deactivate") {
@@ -68,7 +69,7 @@ export async function POST(
       if (!memoryId) {
         return NextResponse.json({ error: "memoryId is required to deactivate." }, { status: 400 });
       }
-      const deactivated = deactivateProjectMemory(projectId, memoryId, storeRoot, userId);
+      const deactivated = deactivateProjectMemory(projectId, memoryId, storeRoot, user.uid);
       return NextResponse.json({ success: deactivated, memoryId });
     }
 
@@ -101,7 +102,7 @@ export async function POST(
     const memory: ProjectMemory = {
       id: memoryId,
       projectId,
-      userId,
+      userId: user.uid,
       category,
       title,
       distilledIntent,
@@ -112,9 +113,16 @@ export async function POST(
       updatedAt: now,
     };
 
-    const saved = saveProjectMemory(projectId, memory, storeRoot, userId);
+    const saved = saveProjectMemory(projectId, memory, storeRoot, user.uid);
     return NextResponse.json({ memory: saved }, { status: 201 });
   } catch (err) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }

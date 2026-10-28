@@ -4,6 +4,13 @@ import { getContextRoots } from "@/server/workspaceContext";
 import { resolveAndValidatePath } from "@/security/boundaries";
 import { ingestDocument } from "@/server/ragService";
 import { syncDocumentToFirebase } from "@/server/firebaseService";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function POST(request: Request) {
   try {
@@ -19,6 +26,9 @@ export async function POST(request: Request) {
     }
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
+
     const canonicalPath = resolveAndValidatePath(workspaceRoot, filePath);
 
     if (!fs.existsSync(canonicalPath)) {
@@ -32,7 +42,7 @@ export async function POST(request: Request) {
     const ragDoc = await ingestDocument(projectId, filePath, buffer, storeRoot);
 
     // Sync metadata to Firebase if configured
-    await syncDocumentToFirebase("default_user", projectId, ragDoc).catch(() => {});
+    await syncDocumentToFirebase(user.uid, projectId, ragDoc).catch(() => {});
 
     return NextResponse.json({
       success: true,
@@ -40,6 +50,13 @@ export async function POST(request: Request) {
       message: `Successfully indexed '${filePath}' into ${ragDoc.chunkCount} vector chunks.`,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Error ingesting document into RAG";
     return NextResponse.json({ error: message }, { status: 400 });
   }

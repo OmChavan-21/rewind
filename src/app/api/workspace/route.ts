@@ -5,6 +5,13 @@ import {
   initializeDemoWorkspace,
   validateWorkspaceDeterministically,
 } from "@/engine/recoveryEngine";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
@@ -12,6 +19,9 @@ export async function GET(request: Request) {
     const projectIdParam = searchParams.get("projectId") || undefined;
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "read");
+
     const info = getWorkspaceInfo(workspaceRoot, storeRoot);
     const validation = validateWorkspaceDeterministically(workspaceRoot);
 
@@ -21,6 +31,13 @@ export async function GET(request: Request) {
       projectId,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Internal server error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -33,6 +50,8 @@ export async function POST(request: Request) {
     const projectIdParam = typeof body.projectId === "string" ? body.projectId.trim() : undefined;
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
 
     initializeDemoWorkspace(workspaceRoot, force);
     const info = getWorkspaceInfo(workspaceRoot, storeRoot);
@@ -45,6 +64,13 @@ export async function POST(request: Request) {
       projectId,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Internal server error";
     return NextResponse.json({ error: message }, { status: 500 });
   }

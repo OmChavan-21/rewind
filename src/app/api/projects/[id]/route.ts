@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import {
-  getProject,
   setActiveProject,
   listProjectSnapshots,
 } from "@/engine/projectManager";
 import { getDefaultStoreRoot } from "@/engine/recoveryEngine";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(
   request: Request,
@@ -13,12 +19,9 @@ export async function GET(
   try {
     const params = await props.params;
     const storeRoot = getDefaultStoreRoot();
-    const project = getProject(params.id, storeRoot);
+    const user = await requireAuthenticatedUser(request, storeRoot);
 
-    if (!project) {
-      return NextResponse.json({ error: "Project not found" }, { status: 404 });
-    }
-
+    const project = assertProjectAccess(user, params.id, storeRoot, "read");
     const snapshots = listProjectSnapshots(params.id, storeRoot);
 
     return NextResponse.json({
@@ -26,6 +29,13 @@ export async function GET(
       snapshots,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Failed to fetch project";
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -38,6 +48,9 @@ export async function POST(
   try {
     const params = await props.params;
     const storeRoot = getDefaultStoreRoot();
+    const user = await requireAuthenticatedUser(request, storeRoot);
+
+    assertProjectAccess(user, params.id, storeRoot, "write");
     const activeProject = setActiveProject(params.id, storeRoot);
 
     return NextResponse.json({
@@ -45,6 +58,13 @@ export async function POST(
       project: activeProject,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     const message = error instanceof Error ? error.message : "Failed to set active project";
     return NextResponse.json({ error: message }, { status: 400 });
   }

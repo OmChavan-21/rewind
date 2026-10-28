@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { askProjectQuestion } from "@/server/ragService";
 import { SecurityError } from "@/security/boundaries";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function POST(request: Request) {
   try {
@@ -24,11 +31,21 @@ export async function POST(request: Request) {
       );
     }
 
-    const { projectId } = getContextRoots(projectIdParam);
+    const { storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "read");
+
     const result = await askProjectQuestion(projectId, question, topK);
 
     return NextResponse.json(result);
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }

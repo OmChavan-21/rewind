@@ -1,29 +1,34 @@
 import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
-import { listChatSessions, createChatSession, DEFAULT_USER_ID } from "@/engine/chatMemoryStore";
-import { getProject } from "@/engine/projectManager";
+import { listChatSessions, createChatSession } from "@/engine/chatMemoryStore";
 import { SecurityError } from "@/security/boundaries";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const projectIdParam = searchParams.get("projectId")?.trim() || "demo-workspace";
-    const userIdParam = searchParams.get("userId")?.trim() || undefined;
-
     const { storeRoot } = getContextRoots(projectIdParam);
 
-    // Verify project exists
-    const proj = getProject(projectIdParam, storeRoot);
-    if (!proj) {
-      return NextResponse.json(
-        { error: `Project '${projectIdParam}' not found.` },
-        { status: 404 }
-      );
-    }
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectIdParam, storeRoot, "read");
 
-    const sessions = listChatSessions(projectIdParam, storeRoot, userIdParam);
+    const sessions = listChatSessions(projectIdParam, storeRoot, user.uid);
     return NextResponse.json({ sessions, projectId: projectIdParam });
   } catch (err) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }
@@ -38,21 +43,14 @@ export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "demo-workspace";
+    const { storeRoot } = getContextRoots(projectId);
+
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
+
     const title = typeof body.title === "string" ? body.title.trim() : undefined;
     const model = typeof body.model === "string" ? body.model.trim() : undefined;
     const routingMode = body.routingMode === "manual" ? "manual" : "auto";
-    const userId = typeof body.userId === "string" && body.userId.trim() ? body.userId.trim() : DEFAULT_USER_ID;
-
-    const { storeRoot } = getContextRoots(projectId);
-
-    // Verify project exists
-    const proj = getProject(projectId, storeRoot);
-    if (!proj) {
-      return NextResponse.json(
-        { error: `Project '${projectId}' not found.` },
-        { status: 404 }
-      );
-    }
 
     const session = createChatSession(
       {
@@ -62,11 +60,18 @@ export async function POST(request: Request) {
         routingMode,
       },
       storeRoot,
-      userId
+      user.uid
     );
 
     return NextResponse.json({ session }, { status: 201 });
   } catch (err) {
+    if (
+      err instanceof AuthenticationError ||
+      err instanceof ForbiddenError ||
+      err instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: err.message }, { status: err.statusCode });
+    }
     if (err instanceof SecurityError) {
       return NextResponse.json({ error: err.message }, { status: 400 });
     }

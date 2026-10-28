@@ -123,7 +123,10 @@ export function resolveProjectWorkspace(projectId: string, storeRoot: string = g
 /**
  * Lists all registered projects with up-to-date stats.
  */
-export function listProjects(storeRoot: string = getDefaultStoreRoot()): ProjectSummary {
+export function listProjects(
+  storeRoot: string = getDefaultStoreRoot(),
+  userId?: string
+): ProjectSummary {
   const registry = loadProjectsRegistry(storeRoot);
   const projectsList: ProjectMetadata[] = [];
 
@@ -148,10 +151,15 @@ export function listProjects(storeRoot: string = getDefaultStoreRoot()): Project
     return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
+  // Filter by userId if requested (preserve shared default project)
+  const filteredProjects = userId
+    ? projectsList.filter((p) => p.isDefault || !p.userId || p.userId === userId)
+    : projectsList;
+
   return {
-    projects: projectsList,
+    projects: filteredProjects,
     activeProjectId: registry.activeProjectId,
-    totalProjects: projectsList.length,
+    totalProjects: filteredProjects.length,
   };
 }
 
@@ -181,7 +189,8 @@ export function getProject(projectId: string, storeRoot: string = getDefaultStor
  */
 export function createProject(
   request: CreateProjectRequest,
-  storeRoot: string = getDefaultStoreRoot()
+  storeRoot: string = getDefaultStoreRoot(),
+  userId?: string
 ): ProjectMetadata {
   const registry = loadProjectsRegistry(storeRoot);
 
@@ -225,6 +234,7 @@ export function createProject(
     totalSizeBytes: stats.totalBytes,
     snapshotCount: 0,
     status: "active",
+    userId,
   };
 
   registry.projects[uniqueId] = newProject;

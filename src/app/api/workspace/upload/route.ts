@@ -26,6 +26,13 @@ import {
 import { loadProjectsRegistry } from "@/engine/projectManager";
 import { atomicWriteFileSync, appendAuditAction } from "@/engine/storage";
 import { ingestDocument } from "@/server/ragService";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export class StreamPayloadTooLargeError extends Error {
   constructor(limitBytes: number) {
@@ -267,6 +274,8 @@ export async function POST(request: Request) {
     }
 
     const { workspaceRoot, storeRoot, projectId } = getContextRoots(targetProjectId);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "write");
     const currentStats = getDirectorySizeBytes(workspaceRoot);
     const dynamicLimits = computeDynamicLimits(currentStats.totalBytes);
 
@@ -399,6 +408,13 @@ export async function POST(request: Request) {
       workspaceFiles: updatedFiles,
     });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     if (
       error instanceof StreamPayloadTooLargeError ||
       (error instanceof Error && error.name === "StreamPayloadTooLargeError") ||

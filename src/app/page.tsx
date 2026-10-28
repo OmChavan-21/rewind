@@ -14,6 +14,7 @@ import { NewSnapshotModal } from "@/components/NewSnapshotModal";
 import { AIAssistantPanel } from "@/components/AIAssistantPanel";
 import { UploadModal } from "@/components/UploadModal";
 import { ProjectManagerModal } from "@/components/ProjectManagerModal";
+import { AuthModal } from "@/components/AuthModal";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
 import { RAGPanel } from "@/components/RAGPanel";
 import type {
@@ -25,6 +26,7 @@ import type {
 } from "@/types/recovery";
 import type { AIStatus } from "@/types/ai";
 import type { ProjectMetadata } from "@/types/project";
+import type { AuthUser } from "@/types/auth";
 import type { WorkspaceDiagnosticsResult } from "@/types/diagnostics";
 import { AlertCircle, CheckCircle2, X } from "lucide-react";
 
@@ -56,6 +58,10 @@ export default function RewindDashboard() {
   const [diagnosticsResult, setDiagnosticsResult] = useState<WorkspaceDiagnosticsResult | null>(null);
   const [isLoadingDiagnostics, setIsLoadingDiagnostics] = useState<boolean>(false);
   const [ragDocsCount, setRagDocsCount] = useState<number>(0);
+
+  // User & Authentication state
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
 
   // Modals & UI state
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -176,6 +182,33 @@ export default function RewindDashboard() {
       isMounted = false;
     };
   }, [activeProjectId, showToast]);
+
+  // Check authenticated user on load
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.user) {
+          setCurrentUser(data.user);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      setCurrentUser(null);
+      refreshData();
+      showToast({
+        type: "info",
+        title: "Signed Out",
+        description: "You have been logged out successfully.",
+      });
+    } catch {
+      // Ignored
+    }
+  }, [refreshData, showToast]);
 
   // Project Switching
   const handleSelectProject = async (projectId: string) => {
@@ -522,6 +555,9 @@ export default function RewindDashboard() {
           isLoading={isLoading}
           onOpenUpload={() => setIsUploadModalOpen(true)}
           onOpenProjectManager={() => setIsProjectModalOpen(true)}
+          currentUser={currentUser}
+          onOpenAuthModal={() => setIsAuthModalOpen(true)}
+          onLogout={handleLogout}
         />
 
         <main className="p-6 max-w-7xl w-full mx-auto space-y-6">
@@ -726,6 +762,22 @@ export default function RewindDashboard() {
         onSelectProject={handleSelectProject}
         onCreateProject={handleCreateProject}
         onRefresh={() => refreshData()}
+      />
+
+      {/* User Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          refreshData();
+          showToast({
+            type: "success",
+            title: "Welcome to Rewind",
+            description: `Signed in as ${user.email}`,
+          });
+        }}
+
       />
     </div>
   );

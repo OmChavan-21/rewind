@@ -2,6 +2,13 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { readPermittedTextFile } from "@/engine/recoveryEngine";
 import { SecurityError, FileTooLargeError, UnsupportedFileTypeError } from "@/security/boundaries";
+import {
+  requireAuthenticatedUser,
+  assertProjectAccess,
+  AuthenticationError,
+  ForbiddenError,
+  NotFoundError,
+} from "@/server/auth";
 
 export async function GET(request: Request) {
   try {
@@ -13,11 +20,21 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Query parameter 'path' is required." }, { status: 400 });
     }
 
-    const { workspaceRoot } = getContextRoots(projectIdParam);
+    const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    assertProjectAccess(user, projectId, storeRoot, "read");
+
     const content = readPermittedTextFile(workspaceRoot, filePath);
 
     return NextResponse.json({ path: filePath, content });
   } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
     if (error instanceof SecurityError) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }
