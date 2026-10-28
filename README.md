@@ -46,7 +46,7 @@ Rewind provides a safe, local, deterministic snapshot-based recovery engine coup
   - `users/{userId}/projects/{projectId}/snapshots/{snapshotId}`
   - `users/{userId}/projects/{projectId}/audit/{actionId}`
   - `users/{userId}/projects/{projectId}/documents/{documentId}`
-- **Production Security Rules**: Configured in [`firestore.rules`](file:///c:/Rewind/rewind/firestore.rules) enforcing strict user-scoped ownership (`request.auth.uid == userId`).
+- **Production Security Rules**: Configured in [`firestore.rules`](./firestore.rules) enforcing strict user-scoped ownership (`request.auth.uid == userId`).
 - **Safe Local Fallback**: When Firebase environment variables are unconfigured, Rewind operates entirely in local filesystem mode without errors.
 
 ### 6. RAG Semantic Knowledge Base & Vector Pipeline
