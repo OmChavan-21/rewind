@@ -397,8 +397,8 @@ export function getDirectorySizeBytes(dirPath: string): { totalBytes: number; fi
  * Accurately measures Node server memory and disk storage metrics.
  */
 export function getMemoryMetrics(workspaceRoot?: string, storeRoot?: string): MemoryMetrics {
-  const wsRoot = workspaceRoot || process.cwd();
-  const stRoot = storeRoot || path.join(process.cwd(), ".rewind_store");
+  const wsRoot = workspaceRoot || (process.env.REWIND_WORKSPACE_DIR ? path.resolve(process.env.REWIND_WORKSPACE_DIR) : process.cwd());
+  const stRoot = storeRoot || (process.env.REWIND_STORE_DIR ? path.resolve(process.env.REWIND_STORE_DIR) : path.join(process.cwd(), ".rewind_store"));
   const mem = process.memoryUsage();
   const workspaceStats = getDirectorySizeBytes(wsRoot);
   const snapshotsDir = path.join(stRoot, "snapshots");

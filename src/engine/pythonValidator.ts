@@ -54,12 +54,21 @@ export function validatePythonSyntaxNative(
   try {
     fs.writeFileSync(tempFile, content, "utf-8");
 
-    const result = spawnSync("python", ["-c", PYTHON_VALIDATOR_SCRIPT, tempFile], {
+    let result = spawnSync("python", ["-c", PYTHON_VALIDATOR_SCRIPT, tempFile], {
       timeout: timeoutMs,
       maxBuffer: 1024 * 1024,
       encoding: "utf-8",
       windowsHide: true,
     });
+
+    if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
+      result = spawnSync("python3", ["-c", PYTHON_VALIDATOR_SCRIPT, tempFile], {
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf-8",
+        windowsHide: true,
+      });
+    }
 
     if (result.error) {
       const errCode = (result.error as NodeJS.ErrnoException).code;
