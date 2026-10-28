@@ -10,11 +10,17 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "snapshots_restore", 10, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const { id } = await params;
     validateSnapshotId(id);

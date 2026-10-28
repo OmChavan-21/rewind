@@ -549,35 +549,81 @@ export class CloudStorageAdapter implements IStorageProvider {
         const snapPrefix = `projects/${projectId}/snapshots/${snapshotId}/files/`;
         const wsPrefix = `projects/${projectId}/workspace/`;
 
+        // 1. STAGE: Pre-download all snapshot files into memory before touching workspace.
+        const stagedFiles = new Map<string, Buffer>();
         try {
           const [files] = await bucket.getFiles({ prefix: snapPrefix });
-          const restoredFiles: string[] = [];
-
           for (const file of files) {
             const relPath = file.name.slice(snapPrefix.length);
             if (!relPath || relPath.endsWith("/")) continue;
 
             const [content] = await file.download();
+            stagedFiles.set(relPath, content);
+          }
+        } catch (stageErr) {
+          throw new StorageError(
+            `Snapshot staging failed for '${snapshotId}': could not download snapshot files: ${
+              stageErr instanceof Error ? stageErr.message : String(stageErr)
+            }`,
+            "INTERNAL_ERROR",
+            500
+          );
+        }
+
+        // 2. BACKUP: Snapshot current workspace files in memory before applying changes so we can rollback on mid-flight failure.
+        const currentBackup = new Map<string, Buffer>();
+        const [preRestoreWsFiles] = await bucket.getFiles({ prefix: wsPrefix });
+        for (const file of preRestoreWsFiles) {
+          const relPath = file.name.slice(wsPrefix.length);
+          if (!relPath || relPath.endsWith("/")) continue;
+          try {
+            const [content] = await file.download();
+            currentBackup.set(relPath, content);
+          } catch {
+            // best-effort backup
+          }
+        }
+
+        // 3. APPLY: Write staged snapshot files and clean up post-snapshot files.
+        const appliedFiles: string[] = [];
+        try {
+          for (const [relPath, content] of stagedFiles.entries()) {
             const targetFile = bucket.file(`${wsPrefix}${relPath}`);
             await targetFile.save(content, { resumable: false });
-            restoredFiles.push(relPath);
+            appliedFiles.push(relPath);
           }
 
-          // Clean up any files that were created in the workspace after this snapshot was taken
-          const [currentWsFiles] = await bucket.getFiles({ prefix: wsPrefix });
-          const targetPaths = new Set(restoredFiles);
-          for (const wsFile of currentWsFiles) {
-            const relPath = wsFile.name.slice(wsPrefix.length);
+          // Delete files that were created in the workspace after this snapshot was taken
+          const targetPaths = new Set(appliedFiles);
+          for (const file of preRestoreWsFiles) {
+            const relPath = file.name.slice(wsPrefix.length);
             if (!relPath || relPath.endsWith("/")) continue;
             if (!targetPaths.has(relPath)) {
-              await wsFile.delete().catch(() => {});
+              await file.delete().catch(() => {});
             }
           }
 
-          return { restoredFiles, snapshot };
-        } catch (err) {
+          return { restoredFiles: appliedFiles, snapshot };
+        } catch (applyErr) {
+          // 4. ROLLBACK ON FAILURE: Re-write original workspace files from in-memory backup
+          let rollbackFailed = false;
+          try {
+            for (const [relPath, content] of currentBackup.entries()) {
+              const file = bucket.file(`${wsPrefix}${relPath}`);
+              await file.save(content, { resumable: false });
+            }
+          } catch {
+            rollbackFailed = true;
+          }
+
           throw new StorageError(
-            `Snapshot restoration failed for '${snapshotId}': ${err instanceof Error ? err.message : String(err)}`,
+            `Snapshot restoration failed mid-flight for '${snapshotId}' (${
+              applyErr instanceof Error ? applyErr.message : String(applyErr)
+            }). ${
+              rollbackFailed
+                ? "WARNING: Automatic rollback also encountered errors."
+                : "Active workspace was safely recovered to pre-restoration state."
+            }`,
             "INTERNAL_ERROR",
             500
           );

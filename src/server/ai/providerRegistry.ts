@@ -12,6 +12,27 @@ import { NebiusProviderClient } from "./providers/nebiusProvider";
 const nvidiaClient = new NvidiaProviderClient();
 const nebiusClient = new NebiusProviderClient();
 
+const disabledClient: AIProviderClient = {
+  provider: "disabled",
+  baseUrl: "",
+  isConfigured: false,
+  checkStatus: async () => ({
+    state: "unconfigured",
+    provider: "disabled",
+    model: "disabled",
+    baseUrl: "",
+    endpointReachable: false,
+    credentialsAccepted: false,
+    modelListed: false,
+    generationVerified: false,
+    message: "AI provider is disabled by configuration (AI_PROVIDER=disabled).",
+  }),
+  listAvailableModels: async () => [],
+  generateCompletion: async () => {
+    throw new Error("AI provider is disabled by configuration (AI_PROVIDER=disabled). Outbound AI calls are prohibited.");
+  },
+};
+
 function sanitizeEnv(val?: string): string {
   if (!val) return "";
   let cleaned = val.trim();
@@ -25,10 +46,22 @@ function sanitizeEnv(val?: string): string {
 }
 
 /**
+ * Checks whether AI capabilities are explicitly disabled.
+ */
+export function isAIDisabled(): boolean {
+  const explicit = sanitizeEnv(process.env.AI_PROVIDER).toLowerCase();
+  return explicit === "disabled" || explicit === "none" || explicit === "off";
+}
+
+/**
  * Determines the currently active AI provider based on environment configuration.
  * Respects explicit AI_PROVIDER if set, otherwise chooses based on available keys.
  */
 export function getActiveProvider(): AIProvider {
+  if (isAIDisabled()) {
+    return "disabled";
+  }
+
   const explicit = sanitizeEnv(process.env.AI_PROVIDER).toLowerCase();
   if (explicit === "nvidia") {
     return "nvidia";
@@ -56,6 +89,9 @@ export function getActiveProvider(): AIProvider {
  */
 export function getProviderClient(provider?: AIProvider): AIProviderClient {
   const target = provider || getActiveProvider();
+  if (target === "disabled") {
+    return disabledClient;
+  }
   if (target === "nebius") {
     return nebiusClient;
   }

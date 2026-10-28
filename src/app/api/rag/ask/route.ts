@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { askProjectQuestion } from "@/server/ragService";
 import { SecurityError } from "@/security/boundaries";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import {
   requireAuthenticatedUser,
   assertProjectAccessAsync,
@@ -11,6 +12,11 @@ import {
 } from "@/server/auth";
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "rag_ask", 30, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const question = typeof body.question === "string" ? body.question.trim() : "";

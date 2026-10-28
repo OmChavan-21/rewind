@@ -48,7 +48,11 @@ async function checkDistributedRateLimit(
   windowMs: number
 ): Promise<RateLimitResult | null> {
   if (testDistributedHandler) {
-    return testDistributedHandler(key, maxRequests, windowMs);
+    try {
+      return await testDistributedHandler(key, maxRequests, windowMs);
+    } catch {
+      return null;
+    }
   }
 
   const restUrl = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;

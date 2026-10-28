@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { applyApprovedAIProposal, ConflictError } from "@/server/proposalExecution";
 import { SecurityError } from "@/security/boundaries";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import {
   requireAuthenticatedUser,
   assertProjectAccessAsync,
@@ -11,6 +12,11 @@ import {
 } from "@/server/auth";
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "ai_apply", 15, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const { proposal, approved } = body;

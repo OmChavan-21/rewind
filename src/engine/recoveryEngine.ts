@@ -462,9 +462,21 @@ export function restoreSnapshot(
     { projectId: options.expectedProjectId || loaded.snapshot.workspaceId }
   );
 
+  // In-memory backup of current workspace files for safe recovery if restore fails mid-flight
+  const backupFileMap = new Map<string, string>();
+  for (const [currPath] of currentFileMap.entries()) {
+    try {
+      const fullPath = resolveAndValidatePath(workspaceRoot, currPath);
+      backupFileMap.set(currPath, fs.readFileSync(fullPath, "utf-8"));
+    } catch {
+      // best-effort backup
+    }
+  }
+
   const restoredFiles: string[] = [];
 
-  // 1. Overwrite or recreate all snapshot files
+  try {
+    // 1. Overwrite or recreate all snapshot files
   for (const fileRecord of snapshot.files) {
     const content = fileContents.get(fileRecord.path);
     if (content !== undefined) {
@@ -483,6 +495,21 @@ export function restoreSnapshot(
         fs.unlinkSync(fullPath);
       }
     }
+  }
+
+  } catch (restoreErr) {
+    // Rollback to pre-restoration backup
+    for (const [backupPath, backupContent] of backupFileMap.entries()) {
+      try {
+        const target = resolveAndValidatePath(workspaceRoot, backupPath, { allowNonExistent: true });
+        atomicWriteFileSync(target, backupContent);
+      } catch {
+        // ignore
+      }
+    }
+    throw new Error(
+      `Snapshot restoration failed mid-flight: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}. Active workspace was safely recovered.`
+    );
   }
 
   // 3. Post-restore deterministic validation

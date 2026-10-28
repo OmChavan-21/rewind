@@ -4,7 +4,8 @@ import { listPermittedWorkspaceFiles, readPermittedTextFile } from "@/engine/rec
 import { generateChangeProposalWithMeta, AIError } from "@/server/nebiusService";
 import { classifyTask } from "@/server/ai/taskClassifier";
 import { routeTask } from "@/server/ai/autoRouter";
-import { getActiveProvider } from "@/server/ai/providerRegistry";
+import { getActiveProvider, isAIDisabled } from "@/server/ai/providerRegistry";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import {
   checkBudgetCaps,
   checkAndReserveCredits,
@@ -32,6 +33,21 @@ import {
 } from "@/server/auth";
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "ai_propose", 15, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
+  if (isAIDisabled()) {
+    return NextResponse.json(
+      {
+        error: "AI proposal generation is disabled in this environment (AI_PROVIDER=disabled).",
+        category: "unconfigured",
+      },
+      { status: 503 }
+    );
+  }
+
   let reservationId: string | undefined;
   let activeProjectId = "demo-workspace";
 

@@ -7,7 +7,7 @@ import type { ValidationResult, RecoveryResult } from "./recovery";
 import type { AIProposalRoutingMeta } from "./router";
 import type { CodeDiagnostic } from "./diagnostics";
 
-export type AIProvider = "nvidia" | "nebius";
+export type AIProvider = "nvidia" | "nebius" | "disabled";
 
 export type AIConnectionState = "unconfigured" | "configured" | "connected" | "failed";
 

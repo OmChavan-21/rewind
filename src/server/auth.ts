@@ -48,11 +48,29 @@ interface StoredDevUser {
 }
 
 const SESSION_COOKIE_NAME = "rewind_session";
-const DEV_SESSION_SECRET =
-  process.env.AUTH_SESSION_SECRET ||
-  process.env.SESSION_SECRET ||
-  "rewind-session-signing-secret-safe-dev-key-2026";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
+ * Returns the session secret for token signing.
+ * In production, enforces that AUTH_SESSION_SECRET or SESSION_SECRET is set with at least 32 characters.
+ */
+export function getSessionSecret(): string {
+  const secret = process.env.AUTH_SESSION_SECRET || process.env.SESSION_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "CRITICAL: AUTH_SESSION_SECRET or SESSION_SECRET must be configured in production (minimum 32 characters)."
+      );
+    }
+    return "rewind-session-signing-secret-safe-dev-key-2026";
+  }
+  if (process.env.NODE_ENV === "production" && secret.length < 32) {
+    throw new Error(
+      "CRITICAL: AUTH_SESSION_SECRET or SESSION_SECRET must be at least 32 characters in production."
+    );
+  }
+  return secret;
+}
 
 function getAuthStorePath(storeRoot: string): string {
   const dir = path.join(storeRoot, "auth");
@@ -100,7 +118,7 @@ export function createDevSessionToken(user: AuthUser): string {
   const payloadStr = JSON.stringify(session);
   const payloadB64 = Buffer.from(payloadStr, "utf-8").toString("base64url");
   const signature = crypto
-    .createHmac("sha256", DEV_SESSION_SECRET)
+    .createHmac("sha256", getSessionSecret())
     .update(payloadB64)
     .digest("base64url");
 
@@ -121,8 +139,14 @@ export function verifyDevSessionToken(token: string): AuthSession | null {
   }
 
   const [payloadB64, signature] = parts;
+  let secret: string;
+  try {
+    secret = getSessionSecret();
+  } catch {
+    return null;
+  }
   const expectedSignature = crypto
-    .createHmac("sha256", DEV_SESSION_SECRET)
+    .createHmac("sha256", secret)
     .update(payloadB64)
     .digest("base64url");
 

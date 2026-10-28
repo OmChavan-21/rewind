@@ -12,8 +12,14 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "rag_ingest", 20, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const filePath = typeof body.filePath === "string" ? body.filePath.trim() : "";

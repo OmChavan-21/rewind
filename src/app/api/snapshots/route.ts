@@ -12,6 +12,7 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import type { Snapshot } from "@/types/recovery";
 
 export async function GET(request: Request) {
@@ -55,6 +56,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "snapshots_create", 20, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : "Manual Snapshot";

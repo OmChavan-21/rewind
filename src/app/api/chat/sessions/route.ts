@@ -12,6 +12,7 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import type { ChatSession } from "@/types/chat";
 
 export async function GET(request: Request) {
@@ -48,6 +49,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "chat_sessions", 20, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "demo-workspace";

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getContextRoots } from "@/server/workspaceContext";
 import { runWorkspaceDiagnostics } from "@/engine/codeDiagnostics";
 import { SecurityError } from "@/security/boundaries";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import {
   requireAuthenticatedUser,
   assertProjectAccessAsync,
@@ -39,6 +40,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "workspace_diagnostics", 30, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const projectId = typeof body.projectId === "string" ? body.projectId : undefined;

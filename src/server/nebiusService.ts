@@ -103,6 +103,16 @@ function trimBaseUrl(value: string): string {
 export function getAIConfig(): AIConfig {
   const explicitProvider = sanitizeEnvVal(process.env.AI_PROVIDER).toLowerCase();
 
+  if (explicitProvider === "disabled" || explicitProvider === "none" || explicitProvider === "off") {
+    return {
+      provider: "disabled",
+      apiKey: "",
+      model: "disabled",
+      baseUrl: "",
+      keyName: "AI_PROVIDER",
+    };
+  }
+
   let provider: AIProvider;
   if (explicitProvider === "nvidia") {
     provider = "nvidia";

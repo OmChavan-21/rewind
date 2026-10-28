@@ -34,6 +34,7 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 import type { AgentAction, PermittedFile } from "@/types/recovery";
 
 export class StreamPayloadTooLargeError extends Error {
@@ -83,6 +84,11 @@ export function createBoundedBodyStream(
 }
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "workspace_upload", 20, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const maxTotalAllowed = getResourceLimits().maxTotalUploadSizeBytes;
 

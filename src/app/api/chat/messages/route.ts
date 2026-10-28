@@ -14,8 +14,14 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { enforceRateLimitAsync } from "@/security/rateLimiter";
 
 export async function POST(request: Request) {
+  const rateLimitRes = await enforceRateLimitAsync(request, "chat_messages", 30, 60_000);
+  if (rateLimitRes) {
+    return rateLimitRes;
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const projectId = typeof body.projectId === "string" ? body.projectId.trim() : "demo-workspace";
