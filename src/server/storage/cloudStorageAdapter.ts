@@ -31,6 +31,7 @@ import type { ChatSession, ChatMessage } from "../../types/chat";
 import type { ProjectMemory } from "../../types/memory";
 import type { RAGDocument, DocumentChunk, VectorSearchResult } from "../../types/rag";
 import { getFirestoreDb, getFirebaseStorageBucket } from "../firebaseService";
+import { FirestoreStorageBucket } from "./firestoreStorageBucket";
 import {
   isPermittedFile,
   validateFileSize,
@@ -152,15 +153,45 @@ export class CloudStorageAdapter implements IStorageProvider {
 
   private async getBucket(): Promise<StorageBucket> {
     if (this.injectedBucket) return this.injectedBucket;
-    const bucket = (await getFirebaseStorageBucket()) as StorageBucket | null;
-    if (!bucket) {
-      throw new StorageError(
-        "Cloud Storage bucket is required in this environment but is unavailable or misconfigured.",
-        "CLOUD_STORAGE_UNAVAILABLE",
-        503
-      );
+
+    // 1. If explicit Cloud Storage bucket is configured, attempt GCS
+    const explicitBucket = process.env.FIREBASE_STORAGE_BUCKET?.trim();
+    if (explicitBucket) {
+      try {
+        const bucket = (await getFirebaseStorageBucket()) as StorageBucket | null;
+        if (bucket) return bucket;
+      } catch (err) {
+        console.warn(
+          "[StorageAdapter] Firebase Cloud Storage unavailable, falling back to Firestore storage bucket:",
+          err
+        );
+      }
     }
-    return bucket;
+
+    // 2. Default to Firestore-backed storage bucket (100% Spark plan free tier compatible)
+    const db = await this.getDb();
+    return new FirestoreStorageBucket(db);
+  }
+
+  private async assertProjectOwnership(projectId: string, userId?: string): Promise<void> {
+    validateProjectId(projectId);
+    if (projectId === DEFAULT_DEMO_PROJECT.id) {
+      return;
+    }
+    if (userId) {
+      const db = await this.getDb();
+      try {
+        const indexDoc = await db.collection("project_index").doc(projectId).get();
+        if (indexDoc.exists) {
+          const data = indexDoc.data();
+          if (data && data.ownerId && data.ownerId !== userId) {
+            throw new StorageError(`Project '${projectId}' access denied.`, "FORBIDDEN", 403);
+          }
+        }
+      } catch (err) {
+        if (err instanceof StorageError) throw err;
+      }
+    }
   }
 
   get projects(): IProjectStore {
@@ -246,6 +277,11 @@ export class CloudStorageAdapter implements IStorageProvider {
               },
               { merge: true }
             );
+
+          await db
+            .collection("project_index")
+            .doc(project.id)
+            .set({ ownerId: userId, updatedAt: new Date().toISOString() }, { merge: true });
         } catch (err) {
           throw new StorageError(
             `Failed to persist project '${project.id}' to Firestore: ${err instanceof Error ? err.message : String(err)}`,
@@ -267,6 +303,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         const db = await this.getDb();
         try {
           await db.collection("users").doc(userId).collection("projects").doc(projectId).delete();
+          await db.collection("project_index").doc(projectId).delete().catch(() => {});
           return true;
         } catch (err) {
           throw new StorageError(
@@ -282,8 +319,7 @@ export class CloudStorageAdapter implements IStorageProvider {
   get workspace(): IWorkspaceStore {
     return {
       listFiles: async (projectId: string, _userId?: string): Promise<PermittedFile[]> => {
-        void _userId;
-        validateProjectId(projectId);
+        await this.assertProjectOwnership(projectId, _userId);
         const bucket = await this.getBucket();
         const prefix = `projects/${projectId}/workspace/`;
 
@@ -320,8 +356,7 @@ export class CloudStorageAdapter implements IStorageProvider {
       },
 
       readFile: async (projectId: string, relativePath: string, _userId?: string): Promise<string> => {
-        void _userId;
-        validateProjectId(projectId);
+        await this.assertProjectOwnership(projectId, _userId);
         const normalized = normalizeRelativePath(relativePath);
         if (!isPermittedFile(normalized)) {
           throw new SecurityError(`File extension not permitted: ${normalized}`);
@@ -354,8 +389,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         content: string | Buffer,
         _userId?: string
       ): Promise<void> => {
-        void _userId;
-        validateProjectId(projectId);
+        await this.assertProjectOwnership(projectId, _userId);
         const normalized = normalizeRelativePath(relativePath);
         if (!isPermittedFile(normalized)) {
           throw new SecurityError(`File extension not permitted: ${normalized}`);
@@ -388,8 +422,7 @@ export class CloudStorageAdapter implements IStorageProvider {
       },
 
       deleteFile: async (projectId: string, relativePath: string, _userId?: string): Promise<boolean> => {
-        void _userId;
-        validateProjectId(projectId);
+        await this.assertProjectOwnership(projectId, _userId);
         const normalized = normalizeRelativePath(relativePath);
         const bucket = await this.getBucket();
         const cloudPath = `projects/${projectId}/workspace/${normalized}`;
@@ -489,6 +522,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         if (!userId) {
           throw new StorageError("User ID is required to create a snapshot", "FORBIDDEN", 403);
         }
+        await this.assertProjectOwnership(projectId, userId);
 
         const db = await this.getDb();
         const bucket = await this.getBucket();
@@ -539,6 +573,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         if (!userId) {
           throw new StorageError("User ID required to restore snapshot", "FORBIDDEN", 403);
         }
+        await this.assertProjectOwnership(projectId, userId);
 
         const snapshot = await this.snapshots.getSnapshot(projectId, snapshotId, userId);
         if (!snapshot) {
