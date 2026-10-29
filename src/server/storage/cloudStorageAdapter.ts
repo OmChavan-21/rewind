@@ -261,9 +261,24 @@ export class CloudStorageAdapter implements IStorageProvider {
         if (!userId) {
           throw new StorageError("User ID is required to save project metadata", "FORBIDDEN", 403);
         }
+        if (project.id === DEFAULT_DEMO_PROJECT.id) {
+          throw new StorageError("Cannot modify shared demo workspace", "FORBIDDEN", 403);
+        }
 
         const db = await this.getDb();
         try {
+          const indexDoc = await db.collection("project_index").doc(project.id).get();
+          if (indexDoc.exists) {
+            const data = indexDoc.data();
+            if (data && data.ownerId && data.ownerId !== userId) {
+              throw new StorageError(
+                `Project '${project.id}' is already claimed by another user.`,
+                "FORBIDDEN",
+                403
+              );
+            }
+          }
+
           await db
             .collection("users")
             .doc(userId)
@@ -283,6 +298,7 @@ export class CloudStorageAdapter implements IStorageProvider {
             .doc(project.id)
             .set({ ownerId: userId, updatedAt: new Date().toISOString() }, { merge: true });
         } catch (err) {
+          if (err instanceof StorageError) throw err;
           throw new StorageError(
             `Failed to persist project '${project.id}' to Firestore: ${err instanceof Error ? err.message : String(err)}`,
             "INTERNAL_ERROR",
@@ -640,9 +656,14 @@ export class CloudStorageAdapter implements IStorageProvider {
 
           return { restoredFiles: appliedFiles, snapshot };
         } catch (applyErr) {
-          // 4. ROLLBACK ON FAILURE: Re-write original workspace files from in-memory backup
+          // 4. ROLLBACK ON FAILURE: Clean up newly created files and re-write original workspace files from in-memory backup
           let rollbackFailed = false;
           try {
+            for (const appliedPath of appliedFiles) {
+              if (!currentBackup.has(appliedPath)) {
+                await bucket.file(`${wsPrefix}${appliedPath}`).delete().catch(() => {});
+              }
+            }
             for (const [relPath, content] of currentBackup.entries()) {
               const file = bucket.file(`${wsPrefix}${relPath}`);
               await file.save(content, { resumable: false });

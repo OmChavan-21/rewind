@@ -362,6 +362,32 @@ describe("Rewind Phase C.3 - Firestore Storage Bucket Suite", () => {
       // Bob cannot list Alice's snapshots
       const bobSnaps = await adapter.snapshots.listSnapshots(aliceProj, bob);
       assert.strictEqual(bobSnaps.length, 0);
+
+      // Bob cannot hijack Alice's project ID via saveProject
+      await assert.rejects(
+        async () => {
+          await adapter.projects.saveProject(makeProject(aliceProj, bob, "Bob Hijack Attempt"), bob);
+        },
+        (err: Error) => {
+          assert.ok(err instanceof StorageError);
+          assert.strictEqual((err as StorageError).statusCode, 403);
+          assert.ok(err.message.includes("already claimed"));
+          return true;
+        }
+      );
+
+      // Cannot overwrite shared demo workspace
+      await assert.rejects(
+        async () => {
+          await adapter.projects.saveProject(makeProject("demo-workspace", bob, "Demo Hijack"), bob);
+        },
+        (err: Error) => {
+          assert.ok(err instanceof StorageError);
+          assert.strictEqual((err as StorageError).statusCode, 403);
+          assert.ok(err.message.includes("Cannot modify shared demo workspace"));
+          return true;
+        }
+      );
     });
   });
 
@@ -423,6 +449,83 @@ describe("Rewind Phase C.3 - Firestore Storage Bucket Suite", () => {
       const currentFiles = await adapter.workspace.listFiles(projectId, userId);
       const roguePresent = currentFiles.some((f) => f.path === "rogue.ts");
       assert.strictEqual(roguePresent, false, "Post-snapshot rogue files must be removed");
+    });
+
+    it("cleans up newly written files during automatic rollback when restoration fails mid-flight", async () => {
+      const { client } = createMockFirestore();
+      const baseBucket = new FirestoreStorageBucket(client);
+      let injectFailure = false;
+
+      const mockBucket = {
+        file: (name: string) => {
+          const fileObj = baseBucket.file(name);
+          if (injectFailure && name.includes("fail_file.ts") && name.includes("/workspace/")) {
+            return {
+              ...fileObj,
+              save: async () => {
+                throw new Error("Simulated disk error writing fail_file.ts");
+              },
+            };
+          }
+          return fileObj;
+        },
+        getFiles: (opts?: { prefix?: string }) => baseBucket.getFiles(opts),
+      };
+
+      const adapter = new CloudStorageAdapter({ db: client, bucket: mockBucket });
+
+      const userId = "user_rollback_test";
+      const projectId = "proj_rollback_cleanup";
+
+      await adapter.projects.saveProject(makeProject(projectId, userId, "Rollback Test Project"), userId);
+
+      // Workspace currently has only original.ts
+      await adapter.workspace.writeFile(projectId, "original.ts", "original content", userId);
+
+      // Snapshot has original.ts and new_file.ts
+      const snap: Snapshot = {
+        id: "snap_broken",
+        workspaceId: projectId,
+        name: "Broken Restoration Target",
+        createdAt: new Date().toISOString(),
+        totalFiles: 2,
+        totalBytes: 100,
+        files: [
+          { path: "new_file.ts", hash: "h1", size: 50, modifiedAt: new Date().toISOString() },
+          { path: "fail_file.ts", hash: "h2", size: 50, modifiedAt: new Date().toISOString() },
+        ],
+        metadata: { projectId },
+      };
+
+      const snapMap = new Map<string, string>([
+        ["new_file.ts", "content for new file"],
+        ["fail_file.ts", "content that will trigger failure"],
+      ]);
+
+      await adapter.snapshots.saveSnapshot(projectId, snap, snapMap, userId);
+
+      // Arm failure for restore
+      injectFailure = true;
+
+      // Attempt restoreSnapshot; must fail and trigger rollback
+      await assert.rejects(
+        async () => {
+          await adapter.snapshots.restoreSnapshot(projectId, "snap_broken", userId);
+        },
+        (err: Error) => {
+          assert.ok(err instanceof StorageError);
+          assert.ok(err.message.includes("safely recovered"));
+          return true;
+        }
+      );
+
+      // Workspace must still have original.ts intact, and new_file.ts must be cleaned up
+      const filesAfterRollback = await adapter.workspace.listFiles(projectId, userId);
+      const originalPresent = filesAfterRollback.some((f) => f.path === "original.ts");
+      const newFilePresent = filesAfterRollback.some((f) => f.path === "new_file.ts");
+
+      assert.strictEqual(originalPresent, true, "Original workspace file must be preserved by rollback");
+      assert.strictEqual(newFilePresent, false, "Partial restored files must be purged during rollback");
     });
   });
 });

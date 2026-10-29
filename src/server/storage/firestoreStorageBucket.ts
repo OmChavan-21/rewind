@@ -100,17 +100,7 @@ export class FirestoreStorageFile implements StorageFile {
       // Ignore read error on fresh file
     }
 
-    // 1. Write parent metadata document
-    await this.docRef.set({
-      name: this.name,
-      size: buffer.length,
-      sha256,
-      chunkCount: chunks.length,
-      updatedAt,
-      contentType,
-    });
-
-    // 2. Write each chunk document
+    // 1. Write each chunk document first
     const chunksColl = this.docRef.collection("chunks");
     for (let i = 0; i < chunks.length; i++) {
       const chunkBuf = chunks[i];
@@ -123,12 +113,22 @@ export class FirestoreStorageFile implements StorageFile {
       });
     }
 
-    // 3. Clean up stale chunk documents if file size shrank
+    // 2. Clean up stale chunk documents if file size shrank
     if (previousChunkCount > chunks.length) {
       for (let i = chunks.length; i < previousChunkCount; i++) {
         await chunksColl.doc(String(i)).delete().catch(() => {});
       }
     }
+
+    // 3. Commit parent metadata document only after all chunks are verified and persisted
+    await this.docRef.set({
+      name: this.name,
+      size: buffer.length,
+      sha256,
+      chunkCount: chunks.length,
+      updatedAt,
+      contentType,
+    });
 
     this.metadata = {
       size: String(buffer.length),
