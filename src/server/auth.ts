@@ -481,7 +481,8 @@ export async function sendFirebaseEmailVerification(idToken: string): Promise<bo
  */
 export async function requestEmailVerification(
   email: string,
-  idToken?: string
+  idToken?: string,
+  uid?: string
 ): Promise<{ success: boolean; message: string; link?: string }> {
   const fbStatus = await checkFirebaseStatus();
   if (!fbStatus.configured || fbStatus.state !== "connected") {
@@ -495,11 +496,51 @@ export async function requestEmailVerification(
   if (idToken) {
     const sent = await sendFirebaseEmailVerification(idToken);
     if (sent) {
-      return { success: true, message: `Verification email sent to ${email}.` };
+      return { success: true, message: `Verification email sent to ${email}. Please check your inbox.` };
     }
   }
 
-  // 2. Otherwise generate link via Firebase Admin SDK
+  // 2. If API key is available, mint custom token -> exchange for idToken -> sendOobCode
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (apiKey) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getAuth } = require("firebase-admin/auth");
+      let resolvedUid = uid;
+      if (!resolvedUid) {
+        try {
+          const userRec = await getAuth().getUserByEmail(email);
+          resolvedUid = userRec.uid;
+        } catch {
+          // Fall through if user lookup fails
+        }
+      }
+
+      if (resolvedUid) {
+        const customToken = await getAuth().createCustomToken(resolvedUid);
+        const exchangeEndpoint = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${apiKey}`;
+        const exRes = await fetch(exchangeEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: customToken, returnSecureToken: true }),
+        });
+        const exData = await exRes.json();
+        if (exRes.ok && exData.idToken) {
+          const sent = await sendFirebaseEmailVerification(exData.idToken);
+          if (sent) {
+            return {
+              success: true,
+              message: `Verification email sent to ${email}. Please check your inbox.`,
+            };
+          }
+        }
+      }
+    } catch (dispatchErr) {
+      console.warn("[Firebase Auth] Custom token exchange dispatch error:", dispatchErr);
+    }
+  }
+
+  // 3. Fallback: generate link via Firebase Admin SDK
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getAuth } = require("firebase-admin/auth");

@@ -28,7 +28,7 @@ export async function POST(request: Request) {
 
     // 2. If caller is an authenticated user needing email verification
     if (user) {
-      const result = await requestEmailVerification(user.email);
+      const result = await requestEmailVerification(user.email, undefined, user.uid);
       return NextResponse.json(result);
     }
 
