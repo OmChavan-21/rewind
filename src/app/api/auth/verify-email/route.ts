@@ -60,7 +60,7 @@ export async function POST(request: Request) {
             alreadyVerified: true,
           });
         }
-        await sendFirebaseEmailVerification(data.idToken);
+        await sendFirebaseEmailVerification(data.idToken, email);
         return NextResponse.json({
           success: true,
           message: `Verification email sent to ${email}. Please check your inbox.`,

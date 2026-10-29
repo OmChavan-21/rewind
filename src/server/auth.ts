@@ -453,26 +453,40 @@ export async function assertProjectAccessAsync(
 /**
  * Sends a Firebase verification email to the user using the Identity Toolkit REST API.
  */
-export async function sendFirebaseEmailVerification(idToken: string): Promise<boolean> {
+export async function sendFirebaseEmailVerification(
+  idToken: string,
+  email?: string
+): Promise<{ success: boolean; error?: string }> {
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
   if (!apiKey || !idToken) {
-    return false;
+    return { success: false, error: "Missing API key or ID token" };
   }
 
   try {
     const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`;
+    const payload: Record<string, string> = {
+      requestType: "VERIFY_EMAIL",
+      idToken,
+    };
+    if (email) {
+      payload.email = email;
+    }
+
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requestType: "VERIFY_EMAIL",
-        idToken,
-      }),
+      body: JSON.stringify(payload),
     });
-    return res.ok;
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return { success: false, error: `HTTP ${res.status}: ${errText}` };
+    }
+    return { success: true };
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn("[Firebase Auth] Failed to dispatch verification email:", err);
-    return false;
+    return { success: false, error: msg };
   }
 }
 
@@ -494,8 +508,8 @@ export async function requestEmailVerification(
 
   // 1. If idToken is provided, dispatch via Firebase Identity Toolkit
   if (idToken) {
-    const sent = await sendFirebaseEmailVerification(idToken);
-    if (sent) {
+    const sent = await sendFirebaseEmailVerification(idToken, email);
+    if (sent.success) {
       return { success: true, message: `Verification email sent to ${email}. Please check your inbox.` };
     }
   }
@@ -527,14 +541,14 @@ export async function requestEmailVerification(
         });
         const exData = await exRes.json();
         if (exRes.ok && exData.idToken) {
-          const sent = await sendFirebaseEmailVerification(exData.idToken);
-          if (sent) {
+          const sent = await sendFirebaseEmailVerification(exData.idToken, email);
+          if (sent.success) {
             return {
               success: true,
               message: `Verification email sent to ${email}. Please check your inbox.`,
             };
           } else {
-            step2Error = "sendFirebaseEmailVerification returned false";
+            step2Error = `sendFirebaseEmailVerification error: ${sent.error}`;
           }
         } else {
           step2Error = `Exchange failed (${exRes.status}): ${JSON.stringify(exData.error || exData)}`;
