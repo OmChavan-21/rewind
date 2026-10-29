@@ -501,6 +501,7 @@ export async function requestEmailVerification(
   }
 
   // 2. If API key is available, mint custom token -> exchange for idToken -> sendOobCode
+  let step2Error: string | null = null;
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
   if (apiKey) {
     try {
@@ -511,8 +512,8 @@ export async function requestEmailVerification(
         try {
           const userRec = await getAuth().getUserByEmail(email);
           resolvedUid = userRec.uid;
-        } catch {
-          // Fall through if user lookup fails
+        } catch (uErr: unknown) {
+          step2Error = `User lookup failed: ${uErr instanceof Error ? uErr.message : String(uErr)}`;
         }
       }
 
@@ -532,12 +533,20 @@ export async function requestEmailVerification(
               success: true,
               message: `Verification email sent to ${email}. Please check your inbox.`,
             };
+          } else {
+            step2Error = "sendFirebaseEmailVerification returned false";
           }
+        } else {
+          step2Error = `Exchange failed (${exRes.status}): ${JSON.stringify(exData.error || exData)}`;
         }
+      } else if (!step2Error) {
+        step2Error = "No resolved UID found for user";
       }
     } catch (dispatchErr) {
-      console.warn("[Firebase Auth] Custom token exchange dispatch error:", dispatchErr);
+      step2Error = `Exception in step 2: ${dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr)}`;
     }
+  } else {
+    step2Error = "No API key configured";
   }
 
   // 3. Fallback: generate link via Firebase Admin SDK
@@ -552,7 +561,7 @@ export async function requestEmailVerification(
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Failed to generate verification link.";
-    throw new Error(`Email verification failed: ${msg}`);
+    throw new Error(`Email verification failed: ${msg} [detail: ${step2Error}]`);
   }
 }
 
