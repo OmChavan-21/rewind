@@ -17,7 +17,7 @@ export async function POST(request: Request) {
       const fallback = await sendFirebaseVerificationEmailForUser(email);
       return NextResponse.json({ success: true, verificationMethod: "link", message: `${fallback.message} Open the link, then return here to sign in.` });
     }
-  } catch (error: unknown) {
+  } catch {
     return NextResponse.json({ error: "Could not send a verification email. Please try again shortly." }, { status: 503 });
   }
 }
