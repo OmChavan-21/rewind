@@ -512,6 +512,12 @@ export async function requestEmailVerification(
     if (sent.success) {
       return { success: true, message: `Verification email sent to ${email}. Please check your inbox.` };
     }
+    if (sent.error?.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+      return {
+        success: true,
+        message: `A verification email was recently sent to ${email}. Please check your inbox (including Spam) or wait a moment before requesting another.`,
+      };
+    }
   }
 
   // 2. If API key is available, mint custom token -> exchange for idToken -> sendOobCode
@@ -546,6 +552,11 @@ export async function requestEmailVerification(
             return {
               success: true,
               message: `Verification email sent to ${email}. Please check your inbox.`,
+            };
+          } else if (sent.error?.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+            return {
+              success: true,
+              message: `A verification email was recently sent to ${email}. Please check your inbox (including Spam) or wait a moment before requesting another.`,
             };
           } else {
             step2Error = `sendFirebaseEmailVerification error: ${sent.error}`;

@@ -60,7 +60,13 @@ export async function POST(request: Request) {
             alreadyVerified: true,
           });
         }
-        await sendFirebaseEmailVerification(data.idToken, email);
+        const sent = await sendFirebaseEmailVerification(data.idToken, email);
+        if (sent.error?.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+          return NextResponse.json({
+            success: true,
+            message: `A verification email was recently sent to ${email}. Please check your inbox (including Spam) or wait a moment before requesting another.`,
+          });
+        }
         return NextResponse.json({
           success: true,
           message: `Verification email sent to ${email}. Please check your inbox.`,
