@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Lock, Mail, User, X, CheckCircle2, AlertCircle, Loader2, KeyRound, ArrowLeft } from "lucide-react";
 import type { AuthUser } from "@/types/auth";
 
-export type AuthMode = "login" | "register" | "verify" | "forgot" | "reset";
+export type AuthMode = "login" | "register" | "verify" | "verifyLink" | "forgot" | "reset";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -49,13 +49,13 @@ export function AuthModal({
         });
         const data = await res.json();
         if (!res.ok && data.accountCreated) {
-          setMode("verify");
-          setSuccessMessage(`${data.error} Use “Resend code” after configuring email delivery.`);
+          setMode(data.verificationMethod === "link" ? "verifyLink" : "verify");
+          setSuccessMessage(data.error || "Your account was created. Request a verification email to continue.");
           return;
         }
         if (!res.ok) throw new Error(data.error || "Registration failed.");
-        setMode("verify");
-        setSuccessMessage(`A six-digit verification code was sent to ${email}.`);
+        setMode(data.verificationMethod === "link" ? "verifyLink" : "verify");
+        setSuccessMessage(data.message || `A six-digit verification code was sent to ${email}.`);
       } else if (mode === "login") {
         const res = await fetch("/api/auth/login", {
           method: "POST",
@@ -82,6 +82,9 @@ export function AuthModal({
         setPassword("");
         setVerificationCode("");
         setSuccessMessage("Email verified. You can now sign in.");
+      } else if (mode === "verifyLink") {
+        setMode("login");
+        setSuccessMessage("After you open the verification link from your email, sign in here.");
       } else if (mode === "forgot") {
         const res = await fetch("/api/auth/forgot-password", {
           method: "POST",
@@ -149,6 +152,7 @@ export function AuthModal({
                 {mode === "login" && "Sign In to Rewind"}
                 {mode === "register" && "Create Developer Account"}
                 {mode === "verify" && "Verify Your Email"}
+                {mode === "verifyLink" && "Check Your Email"}
                 {mode === "forgot" && "Reset Your Password"}
                 {mode === "reset" && "Set New Password"}
               </h3>
@@ -156,6 +160,7 @@ export function AuthModal({
                 {mode === "login" && "Access your project workspaces and chat memories"}
                 {mode === "register" && "Isolated multi-tenant developer workspace"}
                 {mode === "verify" && "Enter the six-digit code sent to your inbox"}
+                {mode === "verifyLink" && "Open the secure verification link, then return here to sign in"}
                 {mode === "forgot" && "Enter your email to receive a recovery link"}
                 {mode === "reset" && "Enter your recovery code and choose a new password"}
               </p>
@@ -238,7 +243,7 @@ export function AuthModal({
             </div>
           )}
 
-          {(mode === "login" || mode === "register" || mode === "forgot" || mode === "verify") && (
+          {(mode === "login" || mode === "register" || mode === "forgot" || mode === "verify" || mode === "verifyLink") && (
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-300">Email Address</label>
               <div className="relative">
@@ -247,7 +252,7 @@ export function AuthModal({
                   type="email"
                   required
                   value={email}
-                  readOnly={mode === "verify"}
+                  readOnly={mode === "verify" || mode === "verifyLink"}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="developer@example.com"
                   className="w-full bg-slate-950/60 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 transition"
@@ -285,6 +290,9 @@ export function AuthModal({
                     });
                     const data = await res.json();
                     if (!res.ok) throw new Error(data.error || "Could not resend code.");
+                    if (data.verificationMethod === "link") {
+                      setMode("verifyLink");
+                    }
                     setSuccessMessage(data.message);
                   } catch (err) {
                     setError(err instanceof Error ? err.message : "Could not resend code.");
@@ -294,6 +302,40 @@ export function AuthModal({
                 }}
               >
                 Resend code
+              </button>
+            </div>
+          )}
+
+          {mode === "verifyLink" && (
+            <div className="space-y-3">
+              <p className="text-xs leading-relaxed text-slate-300">
+                We sent a secure verification link to <strong className="text-slate-100">{email}</strong>.
+                Open it from any device, then come back here and sign in. Check your spam folder if needed.
+              </p>
+              <button
+                type="button"
+                disabled={loading}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 transition disabled:opacity-50"
+                onClick={async () => {
+                  setError(null);
+                  setLoading(true);
+                  try {
+                    const res = await fetch("/api/auth/verify-email", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ email, password }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || "Could not resend verification link.");
+                    setSuccessMessage(data.message || `Verification link sent to ${email}.`);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Could not resend verification link.");
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                Resend verification link
               </button>
             </div>
           )}
@@ -402,6 +444,7 @@ export function AuthModal({
                     {mode === "login" && "Sign In"}
                     {mode === "register" && "Create Account"}
                     {mode === "verify" && "Verify Email"}
+                    {mode === "verifyLink" && "Back to Sign In"}
                     {mode === "forgot" && "Send Recovery Link"}
                     {mode === "reset" && "Set New Password"}
                   </span>

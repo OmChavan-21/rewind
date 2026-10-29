@@ -67,6 +67,12 @@ export async function POST(request: Request) {
             message: `A verification email was recently sent to ${email}. Please check your inbox (including Spam) or wait a moment before requesting another.`,
           });
         }
+        if (!sent.success) {
+          return NextResponse.json(
+            { error: "Firebase could not send the verification email. Please try again shortly." },
+            { status: 503 }
+          );
+        }
         return NextResponse.json({
           success: true,
           message: `Verification email sent to ${email}. Please check your inbox.`,

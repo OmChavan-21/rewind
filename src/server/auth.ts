@@ -659,6 +659,46 @@ export async function sendFirebaseEmailVerification(
   }
 }
 
+/** Sends Firebase's built-in verification email for a user without requiring a Resend sender domain. */
+export async function sendFirebaseVerificationEmailForUser(
+  email: string,
+  uid?: string
+): Promise<{ success: true; message: string; alreadyVerified?: boolean }> {
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!apiKey) {
+    throw new Error("Firebase email verification is not configured.");
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getAuth } = require("firebase-admin/auth");
+  const auth = getAuth();
+  const firebaseUser = uid ? await auth.getUser(uid) : await auth.getUserByEmail(email);
+  if (firebaseUser.emailVerified) {
+    return { success: true, message: "Your email is already verified.", alreadyVerified: true };
+  }
+
+  const customToken = await auth.createCustomToken(firebaseUser.uid);
+  const exchangeEndpoint = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${apiKey}`;
+  const exchangeResponse = await fetch(exchangeEndpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: customToken, returnSecureToken: true }),
+  });
+  const exchangeData = await exchangeResponse.json();
+  if (!exchangeResponse.ok || typeof exchangeData.idToken !== "string") {
+    throw new Error("Firebase could not prepare the verification email.");
+  }
+
+  const result = await sendFirebaseEmailVerification(exchangeData.idToken, email);
+  if (result.success) {
+    return { success: true, message: `A verification link was sent to ${email}.` };
+  }
+  if (result.error?.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+    return { success: true, message: `A verification link was recently sent to ${email}. Check your inbox and spam folder.` };
+  }
+  throw new Error("Firebase could not send the verification email.");
+}
+
 /**
  * Dispatches or generates an email verification link for a registered user.
  */
@@ -1170,7 +1210,7 @@ export async function loginUser(
     const emailVerified = Boolean(data.emailVerified);
     if (!emailVerified) {
       throw new Error(
-        "Please verify your email address before logging in. Enter the six-digit code sent to your inbox."
+        "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
       );
     }
 
@@ -1238,7 +1278,7 @@ export async function loginUser(
 
   if (matchedUser.emailVerified !== true) {
     throw new Error(
-      "Please verify your email address before logging in. Enter the six-digit code sent to your inbox."
+      "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
     );
   }
 
