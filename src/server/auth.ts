@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import nodemailer from "nodemailer";
 import type { AuthUser, AuthSession, RegisterRequest, LoginRequest, UserRole } from "../types/auth";
 import type { ProjectMetadata } from "../types/project";
 import { getDefaultStoreRoot } from "../engine/recoveryEngine";
@@ -96,12 +97,25 @@ async function deleteEmailOtp(email: string, storeRoot: string): Promise<void> {
   } catch { /* already absent */ }
 }
 
-/** Issues a short-lived email OTP. Configure RESEND_API_KEY and AUTH_EMAIL_FROM to deliver it. */
+/** Issues a short-lived email OTP through Gmail SMTP or Resend. */
 export async function sendEmailVerificationOtp(email: string, storeRoot: string = getDefaultStoreRoot()): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.AUTH_EMAIL_FROM;
-  if (!apiKey || !from) {
-    throw new Error("Email OTP delivery is not configured. Set RESEND_API_KEY and AUTH_EMAIL_FROM.");
+  const smtpUser = process.env.SMTP_USER?.trim();
+  const smtpPass = process.env.SMTP_PASS;
+  const smtpHost = process.env.SMTP_HOST?.trim() || "smtp.gmail.com";
+  const smtpPort = Number(process.env.SMTP_PORT || "465");
+  const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser;
+  const smtpConfigured = Boolean(smtpUser || smtpPass || process.env.SMTP_HOST || process.env.SMTP_PORT || process.env.SMTP_FROM);
+
+  if (smtpConfigured && (!smtpUser || !smtpPass)) {
+    throw new Error("Email OTP delivery is not configured. Set both SMTP_USER and SMTP_PASS.");
+  }
+  if (smtpConfigured && (!Number.isInteger(smtpPort) || smtpPort < 1 || smtpPort > 65535)) {
+    throw new Error("Email OTP delivery is not configured. SMTP_PORT must be a valid port number.");
+  }
+  if (!smtpConfigured && (!apiKey || !from)) {
+    throw new Error("Email OTP delivery is not configured. Set SMTP_USER and SMTP_PASS, or RESEND_API_KEY and AUTH_EMAIL_FROM.");
   }
 
   const normalizedEmail = email.trim().toLowerCase();
@@ -109,17 +123,37 @@ export async function sendEmailVerificationOtp(email: string, storeRoot: string 
   const codeHash = crypto.createHmac("sha256", getSessionSecret()).update(`${normalizedEmail}:${code}`).digest("hex");
   await writeEmailOtp(normalizedEmail, { codeHash, expiresAt: Date.now() + 10 * 60_000, attempts: 0 }, storeRoot);
 
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      from,
-      to: [normalizedEmail],
-      subject: "Your Rewind verification code",
-      text: `Your Rewind verification code is ${code}. It expires in 10 minutes.`,
-    }),
-  });
-  if (!response.ok) {
+  try {
+    if (smtpConfigured && smtpUser && smtpPass && smtpFrom) {
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+      });
+      await transporter.sendMail({
+        from: smtpFrom,
+        to: normalizedEmail,
+        subject: "Your Rewind verification code",
+        text: `Your Rewind verification code is ${code}. It expires in 10 minutes.`,
+      });
+      return;
+    }
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from,
+        to: [normalizedEmail],
+        subject: "Your Rewind verification code",
+        text: `Your Rewind verification code is ${code}. It expires in 10 minutes.`,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error("Resend rejected the email request.");
+    }
+  } catch {
     await deleteEmailOtp(normalizedEmail, storeRoot);
     throw new Error("Could not send the verification email. Check the email service configuration and try again.");
   }
