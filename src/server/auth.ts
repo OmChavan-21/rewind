@@ -46,6 +46,7 @@ interface StoredDevUser {
   createdAt: string;
   updatedAt: string;
   emailVerified?: boolean;
+  passwordChangedAt?: number;
 }
 
 const SESSION_COOKIE_NAME = "rewind_session";
@@ -213,6 +214,42 @@ export function clearSessionCookieHeader(): string {
 }
 
 /**
+ * Determines whether session revocation checking is enabled for Firebase session cookies and ID tokens.
+ *
+ * Security Model & Revocation Gap:
+ * Firebase session cookies are self-contained JWTs cryptographically signed by Google's private keys.
+ * By default, `verifySessionCookie(token, false)` performs offline verification: validating the JWT signature
+ * against Google's public certificates and checking the `exp` timestamp. It does NOT query Firebase servers
+ * to check if the session's underlying user was disabled or had refresh tokens revoked via `revokeRefreshTokens()`.
+ * Consequently, if a user resets their password, a stolen or pre-existing session cookie would remain valid
+ * until its natural expiration (up to 7 days) unless `checkRevoked` is true.
+ *
+ * Latency and Availability Trade-Offs:
+ * - `checkRevoked: true`: Performs an outbound HTTPS request to the Firebase Authentication backend on
+ *   every verification call. This guarantees instantaneous session invalidation across all devices upon
+ *   password change or admin token revocation. However, it adds network latency (~50-100ms) to every
+ *   authenticated request and creates a runtime dependency on Firebase Auth service availability.
+ * - `checkRevoked: false`: Purely local cryptographic verification with zero network roundtrips and complete
+ *   resilience against Firebase Auth API outages, but leaves a window where revoked tokens remain accepted.
+ *
+ * Environment Policy:
+ * - Production (`NODE_ENV === "production"`): Defaults to secure-by-default (`true`) to prevent the session
+ *   revocation gap, unless explicitly overridden via `CHECK_REVOKED_SESSION_COOKIES=false`.
+ * - Development & Test (`NODE_ENV !== "production"`): Defaults to `false` to avoid unnecessary network
+ *   dependencies and latency in offline dev/test environments, unless explicitly enabled via
+ *   `CHECK_REVOKED_SESSION_COOKIES=true`.
+ */
+export function isSessionRevocationCheckEnabled(): boolean {
+  if (process.env.CHECK_REVOKED_SESSION_COOKIES === "true") {
+    return true;
+  }
+  if (process.env.CHECK_REVOKED_SESSION_COOKIES === "false") {
+    return false;
+  }
+  return process.env.NODE_ENV === "production";
+}
+
+/**
  * Authenticates user from request.
  * Returns AuthUser if valid, or null if unauthenticated.
  */
@@ -235,6 +272,10 @@ export async function getAuthenticatedUser(
         const users = loadDevUsers(storeRoot);
         const user = users[devSession.userId];
         if (user) {
+          // Invalidate development session tokens issued prior to a password change
+          if (user.passwordChangedAt && devSession.createdAt < user.passwordChangedAt) {
+            return null;
+          }
           return {
             uid: user.uid,
             email: user.email,
@@ -259,13 +300,14 @@ export async function getAuthenticatedUser(
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getAuth } = require("firebase-admin/auth");
         let decoded: { uid: string; email?: string; name?: string; picture?: string; email_verified?: boolean } | null = null;
+        const checkRevoked = isSessionRevocationCheckEnabled();
         try {
-          // Official Firebase guidance: verify server-side session cookie first
-          decoded = await getAuth().verifySessionCookie(token, false);
+          // Official Firebase guidance: verify server-side session cookie
+          decoded = await getAuth().verifySessionCookie(token, checkRevoked);
         } catch {
           try {
             // Fallback: verify Bearer ID token
-            decoded = await getAuth().verifyIdToken(token, false);
+            decoded = await getAuth().verifyIdToken(token, checkRevoked);
           } catch {
             decoded = null;
           }
@@ -588,6 +630,207 @@ export async function requestEmailVerification(
     const msg = err instanceof Error ? err.message : "Failed to generate verification link.";
     throw new Error(`Email verification failed: ${msg} [detail: ${step2Error}]`);
   }
+}
+
+interface MockPasswordResetCode {
+  email: string;
+  expiresAt: number;
+}
+const mockResetCodes = new Map<string, MockPasswordResetCode>();
+
+/**
+ * Returns mock reset code for a given email in development/test environments.
+ */
+export function getMockResetCodeForEmail(email: string): string | null {
+  for (const [code, entry] of mockResetCodes.entries()) {
+    if (entry.email.toLowerCase() === email.toLowerCase() && Date.now() < entry.expiresAt) {
+      return code;
+    }
+  }
+  return null;
+}
+
+/**
+ * Clears mock reset codes.
+ */
+export function clearMockResetCodes(): void {
+  mockResetCodes.clear();
+}
+
+/**
+ * Requests a password recovery email using Firebase Identity Toolkit or local test fallback.
+ * Strictly returns a constant-time generic message to prevent account enumeration attacks.
+ */
+export async function sendPasswordResetEmail(
+  email: string
+): Promise<{ success: boolean; message: string }> {
+  const normalizedEmail = (email || "").trim().toLowerCase();
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    throw new Error("A valid email address is required.");
+  }
+
+  const genericSuccessMessage =
+    "If an account exists with this email address, a password recovery link has been sent.";
+
+  const fbStatus = await checkFirebaseStatus();
+  if (fbStatus.configured && fbStatus.state === "connected") {
+    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    if (!apiKey) {
+      return { success: true, message: genericSuccessMessage };
+    }
+
+    try {
+      const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestType: "PASSWORD_RESET",
+          email: normalizedEmail,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const errCode = data?.error?.message || "";
+        if (errCode.includes("TOO_MANY_ATTEMPTS_TRY_LATER")) {
+          return {
+            success: true,
+            message:
+              "A password recovery email was recently requested. Please check your inbox or wait a moment before trying again.",
+          };
+        }
+        // Mask EMAIL_NOT_FOUND or any other error to prevent account enumeration
+        return { success: true, message: genericSuccessMessage };
+      }
+
+      return { success: true, message: genericSuccessMessage };
+    } catch (err) {
+      console.warn("[Firebase Auth] Password reset dispatch error:", err);
+      return { success: true, message: genericSuccessMessage };
+    }
+  }
+
+  // Development / mock mode:
+  const mockCode = `mock_reset_${crypto.randomBytes(16).toString("hex")}`;
+  mockResetCodes.set(mockCode, {
+    email: normalizedEmail,
+    expiresAt: Date.now() + 15 * 60 * 1000, // 15 minute expiration
+  });
+
+  return { success: true, message: genericSuccessMessage };
+}
+
+/**
+ * Confirms password reset using Firebase action code (oobCode) or development mock code.
+ * Enforces minimum password length (8+ chars) and revokes existing sessions.
+ */
+export async function confirmPasswordReset(
+  oobCode: string,
+  newPassword: string,
+  storeRoot: string = getDefaultStoreRoot()
+): Promise<{ success: boolean; message: string; email?: string }> {
+  const code = (oobCode || "").trim();
+  if (!code) {
+    throw new Error("Reset action code is required.");
+  }
+  if (!newPassword || newPassword.length < 8) {
+    throw new Error("Password must be at least 8 characters long.");
+  }
+
+  const fbStatus = await checkFirebaseStatus();
+  if (fbStatus.configured && fbStatus.state === "connected") {
+    const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    if (!apiKey) {
+      throw new Error("Firebase Authentication is not configured.");
+    }
+
+    const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${apiKey}`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        oobCode: code,
+        newPassword,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      const errCode = data?.error?.message || "";
+      if (errCode.includes("EXPIRED_OOB_CODE") || errCode.includes("INVALID_OOB_CODE")) {
+        throw new Error(
+          "This password reset link is invalid, expired, or has already been used. Please request a new link."
+        );
+      }
+      if (errCode.includes("WEAK_PASSWORD")) {
+        throw new Error("Password must be at least 8 characters long.");
+      }
+      throw new Error("Failed to reset password. Please request a new link.");
+    }
+
+    // Invalidate existing sessions by revoking refresh tokens
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getAuth } = require("firebase-admin/auth");
+      if (data.email) {
+        const userRec = await getAuth().getUserByEmail(data.email);
+        if (userRec && userRec.uid) {
+          await getAuth().revokeRefreshTokens(userRec.uid);
+        }
+      }
+    } catch (revokeErr) {
+      console.warn("[Firebase Auth] Refresh token revocation warning:", revokeErr);
+    }
+
+    return {
+      success: true,
+      message: "Your password has been reset successfully. Please log in with your new password.",
+      email: data.email,
+    };
+  }
+
+  // Development / mock mode:
+  const entry = mockResetCodes.get(code);
+  if (!entry || Date.now() > entry.expiresAt) {
+    mockResetCodes.delete(code);
+    throw new Error(
+      "This password reset link is invalid, expired, or has already been used. Please request a new link."
+    );
+  }
+
+  // Single-use: remove code immediately
+  mockResetCodes.delete(code);
+
+  const users = loadDevUsers(storeRoot);
+  let targetUser: StoredDevUser | null = null;
+  for (const u of Object.values(users)) {
+    if (u.email.toLowerCase() === entry.email.toLowerCase()) {
+      targetUser = u;
+      break;
+    }
+  }
+
+  if (!targetUser) {
+    throw new Error("User account not found.");
+  }
+
+  // Update password with fresh salt and PBKDF2 hash
+  const newSalt = crypto.randomBytes(16).toString("hex");
+  targetUser.salt = newSalt;
+  targetUser.passwordHash = hashPassword(newPassword, newSalt);
+  targetUser.passwordChangedAt = Date.now();
+  targetUser.updatedAt = new Date().toISOString();
+
+  users[targetUser.uid] = targetUser;
+  saveDevUsers(users, storeRoot);
+
+  return {
+    success: true,
+    message: "Your password has been reset successfully. Please log in with your new password.",
+    email: targetUser.email,
+  };
 }
 
 /**

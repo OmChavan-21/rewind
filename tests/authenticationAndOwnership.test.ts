@@ -11,10 +11,15 @@ import {
   createDevSessionToken,
   verifyDevSessionToken,
   getAuthenticatedUser,
+  sendPasswordResetEmail,
+  confirmPasswordReset,
+  getMockResetCodeForEmail,
+  clearMockResetCodes,
+  isSessionRevocationCheckEnabled,
 } from "../src/server/auth";
 import { createProject } from "../src/engine/projectManager";
 import { createSnapshot } from "../src/engine/recoveryEngine";
-import { clearRateLimitStore } from "../src/security/rateLimiter";
+import { clearRateLimitStore, extractClientIp } from "../src/security/rateLimiter";
 
 // API Route Handlers
 import { GET as authMeGet } from "../src/app/api/auth/me/route";
@@ -34,6 +39,8 @@ import { GET as limitsGet } from "../src/app/api/system/limits/route";
 import { GET as auditGet } from "../src/app/api/audit/route";
 import { POST as authGooglePost } from "../src/app/api/auth/google/route";
 import { POST as authVerifyEmailPost } from "../src/app/api/auth/verify-email/route";
+import { POST as authForgotPasswordPost } from "../src/app/api/auth/forgot-password/route";
+import { POST as authResetPasswordPost } from "../src/app/api/auth/reset-password/route";
 import { GET as workspaceFilesGet } from "../src/app/api/workspace/files/route";
 import { GET as workspaceFileGet } from "../src/app/api/workspace/file/route";
 
@@ -72,6 +79,7 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     }
 
     try {
+      clearMockResetCodes();
       fs.rmSync(tempBaseDir, { recursive: true, force: true });
     } catch {
       // Ignored
@@ -1061,5 +1069,348 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     });
     const blockedRes = await authVerifyEmailPost(blockedReq);
     assert.strictEqual(blockedRes.status, 429);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. Password Recovery (Forgot Password & Reset Confirmation Flow)
+  // -------------------------------------------------------------------------
+  it("12.1. verifies password recovery request returns generic success message without leaking account existence", async () => {
+    // Register test user
+    await registerUser(
+      { email: "user_registered@example.com", password: "InitialPassword123!", displayName: "Registered User" },
+      testStore
+    );
+
+    // 1. Recovery request for existing user returns generic success message
+    const reqExisting = new Request("http://localhost/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "user_registered@example.com" }),
+    });
+    const resExisting = await authForgotPasswordPost(reqExisting);
+    assert.strictEqual(resExisting.status, 200);
+    const bodyExisting = await resExisting.json();
+    assert.strictEqual(bodyExisting.success, true);
+    assert.match(bodyExisting.message, /If an account exists/i);
+
+    // 2. Recovery request for non-existent user returns IDENTICAL generic message (anti-enumeration)
+    const reqNonExistent = new Request("http://localhost/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "user_nonexistent@example.com" }),
+    });
+    const resNonExistent = await authForgotPasswordPost(reqNonExistent);
+    assert.strictEqual(resNonExistent.status, 200);
+    const bodyNonExistent = await resNonExistent.json();
+    assert.strictEqual(bodyNonExistent.success, true);
+    assert.strictEqual(bodyNonExistent.message, bodyExisting.message);
+
+    // 3. Malformed email without @ returns HTTP 400
+    const reqMalformed = new Request("http://localhost/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "not-an-email" }),
+    });
+    const resMalformed = await authForgotPasswordPost(reqMalformed);
+    assert.strictEqual(resMalformed.status, 400);
+  });
+
+  it("12.2. enforces rate limiting on /api/auth/forgot-password against request flooding", async () => {
+    // 3 attempts permitted per 15 minutes per IP
+    const testIp = "198.51.100.122";
+    for (let i = 0; i < 3; i++) {
+      const req = new Request("http://localhost/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": testIp },
+        body: JSON.stringify({ email: `test-${i}@example.com` }),
+      });
+      const res = await authForgotPasswordPost(req);
+      assert.strictEqual(res.status, 200);
+    }
+
+    // 4th attempt from same IP is blocked with HTTP 429
+    const blockedReq = new Request("http://localhost/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": testIp },
+      body: JSON.stringify({ email: "test-blocked@example.com" }),
+    });
+    const blockedRes = await authForgotPasswordPost(blockedReq);
+    assert.strictEqual(blockedRes.status, 429);
+  });
+
+  it("12.3. validates reset action code, enforces minimum password length, and applies new password", async () => {
+    await registerUser(
+      { email: "charlie@example.com", password: "OldPassword123!", displayName: "Charlie" },
+      testStore
+    );
+
+    // Request reset
+    await sendPasswordResetEmail("charlie@example.com");
+    const code = getMockResetCodeForEmail("charlie@example.com");
+    assert.ok(code, "Expected mock reset code to be generated");
+
+    // 1. Password reset with short password (< 8 chars) fails
+    const weakReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oobCode: code, newPassword: "short" }),
+    });
+    const weakRes = await authResetPasswordPost(weakReq);
+    assert.strictEqual(weakRes.status, 400);
+    const weakBody = await weakRes.json();
+    assert.match(weakBody.error, /at least 8 characters/i);
+
+    // 2. Successful reset with valid 8+ character password
+    const validReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oobCode: code, newPassword: "BrandNewSecurePassword123!" }),
+    });
+    const validRes = await authResetPasswordPost(validReq);
+    assert.strictEqual(validRes.status, 200);
+    const validBody = await validRes.json();
+    assert.strictEqual(validBody.success, true);
+
+    // 3. Verify old password no longer works
+    await assert.rejects(
+      () => loginUser({ email: "charlie@example.com", password: "OldPassword123!" }, testStore),
+      /Invalid email or password/i
+    );
+
+    // 4. Verify new password successfully logs in
+    const loginSuccess = await loginUser(
+      { email: "charlie@example.com", password: "BrandNewSecurePassword123!" },
+      testStore
+    );
+    assert.strictEqual(loginSuccess.user.email, "charlie@example.com");
+  });
+
+  it("12.4. rejects invalid, expired, and already-used action codes (single-use enforcement)", async () => {
+    await registerUser(
+      { email: "david@example.com", password: "OldPassword123!", displayName: "David" },
+      testStore
+    );
+
+    await sendPasswordResetEmail("david@example.com");
+    const code = getMockResetCodeForEmail("david@example.com");
+    assert.ok(code);
+
+    // 1. Reset succeeds once
+    const firstReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oobCode: code, newPassword: "NewSecurePassword1!" }),
+    });
+    const firstRes = await authResetPasswordPost(firstReq);
+    assert.strictEqual(firstRes.status, 200);
+
+    // 2. Replay attempt with same code fails (single-use)
+    const replayReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oobCode: code, newPassword: "AnotherPassword123!" }),
+    });
+    const replayRes = await authResetPasswordPost(replayReq);
+    assert.strictEqual(replayRes.status, 400);
+    const replayBody = await replayRes.json();
+    assert.match(replayBody.error, /invalid, expired, or has already been used/i);
+
+    // 3. Fictitious action code fails
+    const fakeReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ oobCode: "non_existent_code_xyz", newPassword: "AnotherPassword123!" }),
+    });
+    const fakeRes = await authResetPasswordPost(fakeReq);
+    assert.strictEqual(fakeRes.status, 400);
+  });
+
+  it("12.5. invalidates active pre-existing session tokens after password reset", async () => {
+    const reg = await registerUser(
+      { email: "eve@example.com", password: "EveOldPassword123!", displayName: "Eve" },
+      testStore
+    );
+
+    // Issue session token before password change
+    const oldSessionToken = reg.token;
+    const reqWithOldSession = new Request("http://localhost/api/auth/me", {
+      headers: { Cookie: `rewind_session=${oldSessionToken}` },
+    });
+    const userBeforeReset = await getAuthenticatedUser(reqWithOldSession, testStore);
+    assert.ok(userBeforeReset, "User should be authenticated before password reset");
+
+    // Perform password reset (which updates passwordChangedAt)
+    await sendPasswordResetEmail("eve@example.com");
+    const code = getMockResetCodeForEmail("eve@example.com");
+    assert.ok(code);
+
+    await confirmPasswordReset(code, "EveNewPassword123!", testStore);
+
+    // Check with the old session token: must be rejected because createdAt < passwordChangedAt!
+    const userAfterReset = await getAuthenticatedUser(reqWithOldSession, testStore);
+    assert.strictEqual(userAfterReset, null, "Old session token must be invalidated after password reset");
+
+    // New login succeeds and issues valid session
+    const newLogin = await loginUser({ email: "eve@example.com", password: "EveNewPassword123!" }, testStore);
+    const reqWithNewSession = new Request("http://localhost/api/auth/me", {
+      headers: { Cookie: `rewind_session=${newLogin.token}` },
+    });
+    const userWithNewSession = await getAuthenticatedUser(reqWithNewSession, testStore);
+    assert.ok(userWithNewSession, "New session token must be valid");
+  });
+
+  it("12.6. enforces rate limiting on /api/auth/reset-password against brute force attempts", async () => {
+    const testIp = "198.51.100.199";
+    for (let i = 0; i < 5; i++) {
+      const req = new Request("http://localhost/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": testIp },
+        body: JSON.stringify({ oobCode: `code-${i}`, newPassword: "ShortPass123!" }),
+      });
+      await authResetPasswordPost(req);
+    }
+
+    const blockedReq = new Request("http://localhost/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": testIp },
+      body: JSON.stringify({ oobCode: "code-blocked", newPassword: "ShortPass123!" }),
+    });
+    const blockedRes = await authResetPasswordPost(blockedReq);
+    assert.strictEqual(blockedRes.status, 429);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12.7 & 12.8: Pre-Commit Security Hardening (IP Extraction & Session Revocation)
+  // -------------------------------------------------------------------------
+  it("12.7. safely extracts client IP, prevents X-Forwarded-For spoofing, and enforces platform header precedence", () => {
+    // 1. Spoofed X-Forwarded-For: Attacker prepends fake IP to bypass rate limits
+    // In reverse-proxy chains (e.g. Vercel), proxy appends the real remote address to the right.
+    const spoofedReq = new Request("http://localhost/api/test", {
+      headers: { "x-forwarded-for": "198.51.100.99, 203.0.113.50" },
+    });
+    const extractedSpoofed = extractClientIp(spoofedReq);
+    assert.strictEqual(
+      extractedSpoofed,
+      "203.0.113.50",
+      "Must extract rightmost proxy-appended IP and ignore attacker-controlled leftmost IP"
+    );
+
+    // 2. Trusted Platform Precedence: x-real-ip (set and stripped by Vercel edge) overrides x-forwarded-for
+    const platformReq = new Request("http://localhost/api/test", {
+      headers: {
+        "x-real-ip": "198.51.100.7",
+        "x-forwarded-for": "1.2.3.4, 5.6.7.8",
+      },
+    });
+    assert.strictEqual(
+      extractClientIp(platformReq),
+      "198.51.100.7",
+      "Platform-guaranteed x-real-ip must take precedence over x-forwarded-for"
+    );
+
+    // 3. Vercel-specific forwarded header precedence over general x-forwarded-for
+    const vercelReq = new Request("http://localhost/api/test", {
+      headers: {
+        "x-vercel-forwarded-for": "198.51.100.12",
+        "x-forwarded-for": "1.2.3.4",
+      },
+    });
+    assert.strictEqual(
+      extractClientIp(vercelReq),
+      "198.51.100.12",
+      "x-vercel-forwarded-for must take precedence over general x-forwarded-for"
+    );
+
+    // 4. Backward compatibility: Single IP in x-forwarded-for resolves correctly
+    const singleReq = new Request("http://localhost/api/test", {
+      headers: { "x-forwarded-for": "198.51.100.42" },
+    });
+    assert.strictEqual(extractClientIp(singleReq), "198.51.100.42");
+
+    // 5. Missing headers fallback to conservative 127.0.0.1
+    const emptyReq = new Request("http://localhost/api/test");
+    assert.strictEqual(extractClientIp(emptyReq), "127.0.0.1");
+
+    // 6. Trims whitespace properly
+    const spacedReq = new Request("http://localhost/api/test", {
+      headers: { "x-forwarded-for": " 1.2.3.4 ,  203.0.113.88  " },
+    });
+    assert.strictEqual(extractClientIp(spacedReq), "203.0.113.88");
+  });
+
+  it("12.8. resolves the production session-revocation gap and verifies revocation-aware verification defaults", () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalCheckRevoked = process.env.CHECK_REVOKED_SESSION_COOKIES;
+
+    try {
+      // 1. In Production, session revocation checking defaults to TRUE (secure by default)
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
+      delete process.env.CHECK_REVOKED_SESSION_COOKIES;
+      assert.strictEqual(
+        isSessionRevocationCheckEnabled(),
+        true,
+        "Production must default to revocation-aware session checking to prevent session-revocation gap"
+      );
+
+      // 2. In Production, operators can explicitly opt out if needed for performance or outage resilience
+      process.env.CHECK_REVOKED_SESSION_COOKIES = "false";
+      assert.strictEqual(
+        isSessionRevocationCheckEnabled(),
+        false,
+        "Explicit CHECK_REVOKED_SESSION_COOKIES=false must disable revocation check in production"
+      );
+
+      // 3. In Test/Dev, session revocation checking defaults to FALSE (prevents network calls in tests)
+      (process.env as Record<string, string | undefined>).NODE_ENV = "test";
+      delete process.env.CHECK_REVOKED_SESSION_COOKIES;
+      assert.strictEqual(
+        isSessionRevocationCheckEnabled(),
+        false,
+        "Test/Dev must default to false to avoid external network calls"
+      );
+
+      // 4. In Test/Dev, operators can explicitly opt in
+      process.env.CHECK_REVOKED_SESSION_COOKIES = "true";
+      assert.strictEqual(
+        isSessionRevocationCheckEnabled(),
+        true,
+        "Explicit CHECK_REVOKED_SESSION_COOKIES=true must enable revocation check in test/dev"
+      );
+
+      // 5. Demonstrates the difference between signature/expiry validation and revocation-aware verification
+      // Simulate verification behavior:
+      type MockToken = { uid: string; exp: number; revoked: boolean };
+      const testToken: MockToken = { uid: "user_456", exp: Date.now() + 3600000, revoked: true };
+
+      const verifyMockToken = (token: MockToken, checkRevoked: boolean) => {
+        // Step A: Local signature & expiration verification (offline, 0ms latency)
+        if (token.exp < Date.now()) {
+          throw new Error("Token expired");
+        }
+        // Step B: Revocation check (online HTTPS call to Firebase Auth, ~50-100ms latency)
+        if (checkRevoked && token.revoked) {
+          throw new Error("auth/session-cookie-revoked: Firebase session cookie has been revoked");
+        }
+        return { uid: token.uid };
+      };
+
+      // With checkRevoked: false -> signature check passes, revoked token is mistakenly accepted!
+      const unverifiedResult = verifyMockToken(testToken, false);
+      assert.strictEqual(unverifiedResult.uid, "user_456", "checkRevoked=false only verifies signature/expiry");
+
+      // With checkRevoked: true -> online revocation check catches and rejects the revoked session!
+      assert.throws(
+        () => verifyMockToken(testToken, true),
+        /auth\/session-cookie-revoked/i,
+        "checkRevoked=true must reject sessions revoked by password reset"
+      );
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = originalNodeEnv;
+      if (originalCheckRevoked !== undefined) {
+        process.env.CHECK_REVOKED_SESSION_COOKIES = originalCheckRevoked;
+      } else {
+        delete process.env.CHECK_REVOKED_SESSION_COOKIES;
+      }
+    }
   });
 });

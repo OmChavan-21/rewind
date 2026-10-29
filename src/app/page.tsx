@@ -14,7 +14,7 @@ import { NewSnapshotModal } from "@/components/NewSnapshotModal";
 import { AIAssistantPanel } from "@/components/AIAssistantPanel";
 import { UploadModal } from "@/components/UploadModal";
 import { ProjectManagerModal } from "@/components/ProjectManagerModal";
-import { AuthModal } from "@/components/AuthModal";
+import { AuthModal, type AuthMode } from "@/components/AuthModal";
 import { DiagnosticsPanel } from "@/components/DiagnosticsPanel";
 import { RAGPanel } from "@/components/RAGPanel";
 import type {
@@ -62,6 +62,8 @@ export default function RewindDashboard() {
   // User & Authentication state
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<AuthMode>("login");
+  const [authModalOobCode, setAuthModalOobCode] = useState<string>("");
   const [isResendingVerification, setIsResendingVerification] = useState<boolean>(false);
 
   // Modals & UI state
@@ -184,7 +186,7 @@ export default function RewindDashboard() {
     };
   }, [activeProjectId, showToast]);
 
-  // Check authenticated user on load
+  // Check authenticated user on load & detect password recovery action codes
   useEffect(() => {
     fetch("/api/auth/me")
       .then((r) => (r.ok ? r.json() : null))
@@ -194,6 +196,19 @@ export default function RewindDashboard() {
         }
       })
       .catch(() => {});
+
+    if (typeof window !== "undefined") {
+      const urlParams = new URLSearchParams(window.location.search);
+      const oobCode = urlParams.get("oobCode");
+      const mode = urlParams.get("mode");
+      if (oobCode && (mode === "resetPassword" || !mode)) {
+        queueMicrotask(() => {
+          setAuthModalMode("reset");
+          setAuthModalOobCode(oobCode);
+          setIsAuthModalOpen(true);
+        });
+      }
+    }
   }, []);
 
   const handleLogout = useCallback(async () => {
@@ -813,7 +828,13 @@ export default function RewindDashboard() {
       {/* User Authentication Modal */}
       <AuthModal
         isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
+        onClose={() => {
+          setIsAuthModalOpen(false);
+          setAuthModalMode("login");
+          setAuthModalOobCode("");
+        }}
+        initialMode={authModalMode}
+        initialOobCode={authModalOobCode}
         onAuthSuccess={(user) => {
           setCurrentUser(user);
           refreshData();
@@ -825,7 +846,6 @@ export default function RewindDashboard() {
               : `Signed in as ${user.email}`,
           });
         }}
-
       />
     </div>
   );
