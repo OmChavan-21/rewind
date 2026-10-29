@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import { Lock, Mail, User, X, CheckCircle2, AlertCircle, Loader2, KeyRound, ArrowLeft } from "lucide-react";
 import type { AuthUser } from "@/types/auth";
 
-export type AuthMode = "login" | "register" | "forgot" | "reset";
+export type AuthMode = "login" | "register" | "verify" | "forgot" | "reset";
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -27,6 +27,7 @@ export function AuthModal({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [oobCode, setOobCode] = useState(initialOobCode);
+  const [verificationCode, setVerificationCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,17 +41,26 @@ export function AuthModal({
     setLoading(true);
 
     try {
-      if (mode === "login" || mode === "register") {
-        const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/register";
-        const payload =
-          mode === "login"
-            ? { email, password }
-            : { email, password, displayName: displayName.trim() || undefined };
-
-        const res = await fetch(endpoint, {
+      if (mode === "register") {
+        const res = await fetch("/api/auth/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ email, password, displayName: displayName.trim() || undefined }),
+        });
+        const data = await res.json();
+        if (!res.ok && data.accountCreated) {
+          setMode("verify");
+          setSuccessMessage(`${data.error} Use “Resend code” after configuring email delivery.`);
+          return;
+        }
+        if (!res.ok) throw new Error(data.error || "Registration failed.");
+        setMode("verify");
+        setSuccessMessage(`A six-digit verification code was sent to ${email}.`);
+      } else if (mode === "login") {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
         });
 
         const data = await res.json();
@@ -60,6 +70,18 @@ export function AuthModal({
 
         onAuthSuccess(data.user);
         onClose();
+      } else if (mode === "verify") {
+        const res = await fetch("/api/auth/verify-otp", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, code: verificationCode }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Email verification failed.");
+        setMode("login");
+        setPassword("");
+        setVerificationCode("");
+        setSuccessMessage("Email verified. You can now sign in.");
       } else if (mode === "forgot") {
         const res = await fetch("/api/auth/forgot-password", {
           method: "POST",
@@ -126,12 +148,14 @@ export function AuthModal({
               <h3 className="text-sm font-semibold text-slate-100">
                 {mode === "login" && "Sign In to Rewind"}
                 {mode === "register" && "Create Developer Account"}
+                {mode === "verify" && "Verify Your Email"}
                 {mode === "forgot" && "Reset Your Password"}
                 {mode === "reset" && "Set New Password"}
               </h3>
               <p className="text-xs text-slate-400">
                 {mode === "login" && "Access your project workspaces and chat memories"}
                 {mode === "register" && "Isolated multi-tenant developer workspace"}
+                {mode === "verify" && "Enter the six-digit code sent to your inbox"}
                 {mode === "forgot" && "Enter your email to receive a recovery link"}
                 {mode === "reset" && "Enter your recovery code and choose a new password"}
               </p>
@@ -214,7 +238,7 @@ export function AuthModal({
             </div>
           )}
 
-          {(mode === "login" || mode === "register" || mode === "forgot") && (
+          {(mode === "login" || mode === "register" || mode === "forgot" || mode === "verify") && (
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-300">Email Address</label>
               <div className="relative">
@@ -223,11 +247,54 @@ export function AuthModal({
                   type="email"
                   required
                   value={email}
+                  readOnly={mode === "verify"}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="developer@example.com"
                   className="w-full bg-slate-950/60 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 transition"
                 />
               </div>
+            </div>
+          )}
+
+          {mode === "verify" && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300">Email Verification Code</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                required
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, ""))}
+                placeholder="123456"
+                className="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-sm tracking-[0.4em] text-center text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-cyan-500 transition"
+              />
+              <button
+                type="button"
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 transition"
+                onClick={async () => {
+                  setError(null);
+                  setLoading(true);
+                  try {
+                    const res = await fetch("/api/auth/resend-otp", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ email }),
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || "Could not resend code.");
+                    setSuccessMessage(data.message);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Could not resend code.");
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                Resend code
+              </button>
             </div>
           )}
 
@@ -334,6 +401,7 @@ export function AuthModal({
                   <span>
                     {mode === "login" && "Sign In"}
                     {mode === "register" && "Create Account"}
+                    {mode === "verify" && "Verify Email"}
                     {mode === "forgot" && "Send Recovery Link"}
                     {mode === "reset" && "Set New Password"}
                   </span>

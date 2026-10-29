@@ -51,6 +51,129 @@ interface StoredDevUser {
 
 const SESSION_COOKIE_NAME = "rewind_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+interface EmailOtpRecord { codeHash: string; expiresAt: number; attempts: number }
+
+async function writeEmailOtp(email: string, record: EmailOtpRecord, storeRoot: string): Promise<void> {
+  const db = await getFirestoreDb();
+  if (db) {
+    const id = crypto.createHash("sha256").update(email).digest("hex");
+    await (db as any).collection("email_verification_otps").doc(id).set({ email, ...record });
+    return;
+  }
+  const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
+  let records: Record<string, EmailOtpRecord> = {};
+  try { records = JSON.parse(fs.readFileSync(filePath, "utf-8")); } catch { /* first OTP */ }
+  records[email] = record;
+  atomicWriteFileSync(filePath, JSON.stringify(records));
+}
+
+async function readEmailOtp(email: string, storeRoot: string): Promise<EmailOtpRecord | null> {
+  const db = await getFirestoreDb();
+  if (db) {
+    const id = crypto.createHash("sha256").update(email).digest("hex");
+    const doc = await (db as any).collection("email_verification_otps").doc(id).get();
+    return doc.exists ? doc.data() as EmailOtpRecord : null;
+  }
+  const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
+  try {
+    const records = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, EmailOtpRecord>;
+    return records[email] || null;
+  } catch { return null; }
+}
+
+async function deleteEmailOtp(email: string, storeRoot: string): Promise<void> {
+  const db = await getFirestoreDb();
+  if (db) {
+    const id = crypto.createHash("sha256").update(email).digest("hex");
+    await (db as any).collection("email_verification_otps").doc(id).delete();
+    return;
+  }
+  const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
+  try {
+    const records = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Record<string, EmailOtpRecord>;
+    delete records[email];
+    atomicWriteFileSync(filePath, JSON.stringify(records));
+  } catch { /* already absent */ }
+}
+
+/** Issues a short-lived email OTP. Configure RESEND_API_KEY and AUTH_EMAIL_FROM to deliver it. */
+export async function sendEmailVerificationOtp(email: string, storeRoot: string = getDefaultStoreRoot()): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.AUTH_EMAIL_FROM;
+  if (!apiKey || !from) {
+    throw new Error("Email OTP delivery is not configured. Set RESEND_API_KEY and AUTH_EMAIL_FROM.");
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const codeHash = crypto.createHmac("sha256", getSessionSecret()).update(`${normalizedEmail}:${code}`).digest("hex");
+  await writeEmailOtp(normalizedEmail, { codeHash, expiresAt: Date.now() + 10 * 60_000, attempts: 0 }, storeRoot);
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from,
+      to: [normalizedEmail],
+      subject: "Your Rewind verification code",
+      text: `Your Rewind verification code is ${code}. It expires in 10 minutes.`,
+    }),
+  });
+  if (!response.ok) {
+    await deleteEmailOtp(normalizedEmail, storeRoot);
+    throw new Error("Could not send the verification email. Check the email service configuration and try again.");
+  }
+}
+
+export async function resendEmailVerificationOtp(email: string, storeRoot: string = getDefaultStoreRoot()): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const fbStatus = await checkFirebaseStatus();
+  if (fbStatus.configured && fbStatus.state === "connected") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require("firebase-admin/auth");
+    const user = await getAuth().getUserByEmail(normalizedEmail);
+    if (user.emailVerified) throw new Error("This email address is already verified.");
+  } else {
+    const user = Object.values(loadDevUsers(storeRoot)).find((item) => item.email === normalizedEmail);
+    if (!user) throw new Error("No account found for that email address.");
+    if (user.emailVerified) throw new Error("This email address is already verified.");
+  }
+  await sendEmailVerificationOtp(normalizedEmail, storeRoot);
+}
+
+/** Confirms an OTP and marks the account verified in its identity provider. */
+export async function verifyEmailOtp(email: string, code: string, storeRoot: string = getDefaultStoreRoot()): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const record = await readEmailOtp(normalizedEmail, storeRoot);
+  if (!record || record.expiresAt <= Date.now() || record.attempts >= 5) {
+    await deleteEmailOtp(normalizedEmail, storeRoot);
+    throw new Error("That verification code is invalid or expired. Request a new code.");
+  }
+  record.attempts += 1;
+  await writeEmailOtp(normalizedEmail, record, storeRoot);
+  const submittedHash = crypto.createHmac("sha256", getSessionSecret()).update(`${normalizedEmail}:${code.trim()}`).digest("hex");
+  if (!/^\d{6}$/.test(code.trim()) || !crypto.timingSafeEqual(Buffer.from(record.codeHash, "hex"), Buffer.from(submittedHash, "hex"))) {
+    throw new Error("That verification code is invalid or expired. Request a new code.");
+  }
+
+  const fbStatus = await checkFirebaseStatus();
+  if (fbStatus.configured && fbStatus.state === "connected") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require("firebase-admin/auth");
+    const firebaseUser = await getAuth().getUserByEmail(normalizedEmail);
+    await getAuth().updateUser(firebaseUser.uid, { emailVerified: true });
+    const db = await getFirestoreDb();
+    if (db) await (db as any).collection("users").doc(firebaseUser.uid).set({ emailVerified: true }, { merge: true });
+  } else {
+    const users = loadDevUsers(storeRoot);
+    const user = Object.values(users).find((item) => item.email === normalizedEmail);
+    if (!user) throw new Error("Account not found.");
+    user.emailVerified = true;
+    user.updatedAt = new Date().toISOString();
+    saveDevUsers(users, storeRoot);
+  }
+  await deleteEmailOtp(normalizedEmail, storeRoot);
+}
 
 /**
  * Returns the session secret for token signing.
@@ -332,6 +455,10 @@ export async function getAuthenticatedUser(
         // Not a valid Firebase token or verification failed
       }
     }
+
+    // A supplied but invalid token must not be treated as an anonymous
+    // development request and silently upgraded to the mock user below.
+    return null;
   }
 
   // 3. Fallback: Development/test mock mode when running locally or during tests
@@ -913,10 +1040,6 @@ export async function registerUser(
           if (res.ok && data.idToken) {
             token = await getAuth().createSessionCookie(data.idToken, { expiresIn: SESSION_TTL_MS });
 
-            // Automatically dispatch Firebase verification email
-            sendFirebaseEmailVerification(data.idToken).catch((err) => {
-              console.warn("[Firebase Auth] Async verification email dispatch error:", err);
-            });
           } else {
             token = await getAuth().createCustomToken(userRecord.uid);
           }
@@ -972,7 +1095,7 @@ export async function registerUser(
     creditsUsed: 0,
     createdAt: now,
     updatedAt: now,
-    emailVerified: process.env.REQUIRE_EMAIL_VERIFICATION === "true" ? false : true,
+    emailVerified: false,
   };
 
   users[uid] = storedUser;
@@ -1045,9 +1168,9 @@ export async function loginUser(
     }
 
     const emailVerified = Boolean(data.emailVerified);
-    if (process.env.REQUIRE_EMAIL_VERIFICATION === "true" && !emailVerified) {
+    if (!emailVerified) {
       throw new Error(
-        "Please verify your email address before logging in. Check your inbox for the verification link."
+        "Please verify your email address before logging in. Enter the six-digit code sent to your inbox."
       );
     }
 
@@ -1113,9 +1236,9 @@ export async function loginUser(
     throw new Error("Invalid email or password.");
   }
 
-  if (process.env.REQUIRE_EMAIL_VERIFICATION === "true" && matchedUser.emailVerified === false) {
+  if (matchedUser.emailVerified !== true) {
     throw new Error(
-      "Please verify your email address before logging in. Check your inbox for the verification link."
+      "Please verify your email address before logging in. Enter the six-digit code sent to your inbox."
     );
   }
 
