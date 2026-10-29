@@ -1196,16 +1196,51 @@ export async function loginUser(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, returnSecureToken: true }),
     });
-    const data = await res.json();
+    let data = await res.json();
     if (!res.ok || !data.idToken) {
       throw new Error(data.error?.message || "Invalid credentials.");
     }
 
-    const emailVerified = Boolean(data.emailVerified);
+    let emailVerified = Boolean(data.emailVerified);
     if (!emailVerified) {
-      throw new Error(
-        "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
-      );
+      // Identity Toolkit can briefly return a stale emailVerified value after
+      // the Admin SDK marks a just-verified account. Only retry when the Admin
+      // record confirms verification; never bypass the verification check.
+      let verifiedByAdmin = false;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getAuth } = require("firebase-admin/auth");
+        const adminUser = await getAuth().getUser(data.localId);
+        verifiedByAdmin = adminUser.emailVerified;
+      } catch {
+        // If Admin lookup is unavailable, retain the normal fail-closed behavior.
+      }
+
+      if (!verifiedByAdmin) {
+        throw new Error(
+          "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
+        );
+      }
+
+      for (const delayMs of [250, 750, 1500]) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const retryResponse = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password, returnSecureToken: true }),
+        });
+        const retryData = await retryResponse.json();
+        if (!retryResponse.ok || !retryData.idToken) {
+          throw new Error(retryData.error?.message || "Invalid credentials.");
+        }
+        data = retryData;
+        emailVerified = Boolean(data.emailVerified);
+        if (emailVerified) break;
+      }
+
+      if (!emailVerified) {
+        throw new Error("Your email is verified, but sign-in is still syncing. Please try again in a few seconds.");
+      }
     }
 
     const user: AuthUser = {
