@@ -45,6 +45,7 @@ interface StoredDevUser {
   creditsUsed: number;
   createdAt: string;
   updatedAt: string;
+  emailVerified?: boolean;
 }
 
 const SESSION_COOKIE_NAME = "rewind_session";
@@ -245,6 +246,7 @@ export async function getAuthenticatedUser(
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
             authProvider: "development",
+            emailVerified: user.emailVerified ?? true,
           };
         }
       }
@@ -256,7 +258,7 @@ export async function getAuthenticatedUser(
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getAuth } = require("firebase-admin/auth");
-        let decoded: { uid: string; email?: string; name?: string; picture?: string } | null = null;
+        let decoded: { uid: string; email?: string; name?: string; picture?: string; email_verified?: boolean } | null = null;
         try {
           // Official Firebase guidance: verify server-side session cookie first
           decoded = await getAuth().verifySessionCookie(token, false);
@@ -281,6 +283,7 @@ export async function getAuthenticatedUser(
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             authProvider: "firebase",
+            emailVerified: Boolean(decoded.email_verified),
           };
         }
       } catch {
@@ -309,6 +312,7 @@ export async function getAuthenticatedUser(
       createdAt: "2026-10-15T00:00:00.000Z",
       updatedAt: new Date().toISOString(),
       authProvider: "development",
+      emailVerified: true,
     };
   }
 
@@ -447,6 +451,71 @@ export async function assertProjectAccessAsync(
 }
 
 /**
+ * Sends a Firebase verification email to the user using the Identity Toolkit REST API.
+ */
+export async function sendFirebaseEmailVerification(idToken: string): Promise<boolean> {
+  const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+  if (!apiKey || !idToken) {
+    return false;
+  }
+
+  try {
+    const endpoint = `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestType: "VERIFY_EMAIL",
+        idToken,
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.warn("[Firebase Auth] Failed to dispatch verification email:", err);
+    return false;
+  }
+}
+
+/**
+ * Dispatches or generates an email verification link for a registered user.
+ */
+export async function requestEmailVerification(
+  email: string,
+  idToken?: string
+): Promise<{ success: boolean; message: string; link?: string }> {
+  const fbStatus = await checkFirebaseStatus();
+  if (!fbStatus.configured || fbStatus.state !== "connected") {
+    return {
+      success: true,
+      message: "Verification email simulated in development mode.",
+    };
+  }
+
+  // 1. If idToken is provided, dispatch via Firebase Identity Toolkit
+  if (idToken) {
+    const sent = await sendFirebaseEmailVerification(idToken);
+    if (sent) {
+      return { success: true, message: `Verification email sent to ${email}.` };
+    }
+  }
+
+  // 2. Otherwise generate link via Firebase Admin SDK
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require("firebase-admin/auth");
+    const link = await getAuth().generateEmailVerificationLink(email);
+    return {
+      success: true,
+      message: `Verification link generated for ${email}.`,
+      link: process.env.NODE_ENV !== "production" ? link : undefined,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : "Failed to generate verification link.";
+    throw new Error(`Email verification failed: ${msg}`);
+  }
+}
+
+/**
  * Registers a new user.
  * Enforces email format, password length, and rejects privilege escalation.
  */
@@ -501,6 +570,7 @@ export async function registerUser(
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         authProvider: "firebase",
+        emailVerified: Boolean(userRecord.emailVerified),
       };
 
       // Sync user profile to Firestore
@@ -524,6 +594,11 @@ export async function registerUser(
           const data = await res.json();
           if (res.ok && data.idToken) {
             token = await getAuth().createSessionCookie(data.idToken, { expiresIn: SESSION_TTL_MS });
+
+            // Automatically dispatch Firebase verification email
+            sendFirebaseEmailVerification(data.idToken).catch((err) => {
+              console.warn("[Firebase Auth] Async verification email dispatch error:", err);
+            });
           } else {
             token = await getAuth().createCustomToken(userRecord.uid);
           }
@@ -579,6 +654,7 @@ export async function registerUser(
     creditsUsed: 0,
     createdAt: now,
     updatedAt: now,
+    emailVerified: process.env.REQUIRE_EMAIL_VERIFICATION === "true" ? false : true,
   };
 
   users[uid] = storedUser;
@@ -595,6 +671,7 @@ export async function registerUser(
     createdAt: now,
     updatedAt: now,
     authProvider: "development",
+    emailVerified: storedUser.emailVerified ?? true,
   };
 
   const token = createDevSessionToken(user);
@@ -649,6 +726,13 @@ export async function loginUser(
       throw new Error(data.error?.message || "Invalid credentials.");
     }
 
+    const emailVerified = Boolean(data.emailVerified);
+    if (process.env.REQUIRE_EMAIL_VERIFICATION === "true" && !emailVerified) {
+      throw new Error(
+        "Please verify your email address before logging in. Check your inbox for the verification link."
+      );
+    }
+
     const user: AuthUser = {
       uid: data.localId,
       email: data.email,
@@ -660,6 +744,7 @@ export async function loginUser(
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       authProvider: "firebase",
+      emailVerified,
     };
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -710,6 +795,12 @@ export async function loginUser(
     throw new Error("Invalid email or password.");
   }
 
+  if (process.env.REQUIRE_EMAIL_VERIFICATION === "true" && matchedUser.emailVerified === false) {
+    throw new Error(
+      "Please verify your email address before logging in. Check your inbox for the verification link."
+    );
+  }
+
   const user: AuthUser = {
     uid: matchedUser.uid,
     email: matchedUser.email,
@@ -721,6 +812,7 @@ export async function loginUser(
     createdAt: matchedUser.createdAt,
     updatedAt: matchedUser.updatedAt,
     authProvider: "development",
+    emailVerified: matchedUser.emailVerified ?? true,
   };
 
   const token = createDevSessionToken(user);
@@ -756,7 +848,7 @@ export async function authenticateWithGoogleIdToken(
   if (fbStatus.configured && fbStatus.state === "connected") {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getAuth } = require("firebase-admin/auth");
-    let decoded: { uid: string; email?: string; name?: string; picture?: string };
+    let decoded: { uid: string; email?: string; name?: string; picture?: string; email_verified?: boolean };
     try {
       decoded = await getAuth().verifyIdToken(idToken, true);
     } catch (err) {
@@ -775,6 +867,7 @@ export async function authenticateWithGoogleIdToken(
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       authProvider: "google",
+      emailVerified: Boolean(decoded.email_verified ?? true),
     };
 
     // Upsert user profile to Firestore
@@ -811,6 +904,7 @@ export async function authenticateWithGoogleIdToken(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     authProvider: "google",
+    emailVerified: true,
   };
 
   const sessionToken = createDevSessionToken(user);

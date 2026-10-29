@@ -62,6 +62,7 @@ export default function RewindDashboard() {
   // User & Authentication state
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isResendingVerification, setIsResendingVerification] = useState<boolean>(false);
 
   // Modals & UI state
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -209,6 +210,33 @@ export default function RewindDashboard() {
       // Ignored
     }
   }, [refreshData, showToast]);
+
+  const handleResendVerificationEmail = useCallback(async () => {
+    if (!currentUser) return;
+    setIsResendingVerification(true);
+    try {
+      const res = await fetch("/api/auth/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentUser.email }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send verification email");
+      showToast({
+        type: "success",
+        title: "Verification Email Sent",
+        description: data.message || "Please check your inbox.",
+      });
+    } catch (err: unknown) {
+      showToast({
+        type: "error",
+        title: "Email Dispatch Error",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setIsResendingVerification(false);
+    }
+  }, [currentUser, showToast]);
 
   // Project Switching
   const handleSelectProject = async (projectId: string) => {
@@ -560,6 +588,24 @@ export default function RewindDashboard() {
           onLogout={handleLogout}
         />
 
+        {currentUser && currentUser.emailVerified === false && (
+          <div className="bg-amber-950/60 border-b border-amber-800/80 px-6 py-2.5 flex items-center justify-between text-xs text-amber-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                Your email (<strong>{currentUser.email}</strong>) is not verified. Check your inbox for the verification link.
+              </span>
+            </div>
+            <button
+              onClick={handleResendVerificationEmail}
+              disabled={isResendingVerification}
+              className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-medium transition disabled:opacity-50"
+            >
+              {isResendingVerification ? "Sending..." : "Resend Verification Email"}
+            </button>
+          </div>
+        )}
+
         <main className="p-6 max-w-7xl w-full mx-auto space-y-6">
           {/* Invariant Failure Alert if Broken */}
           {validation && !validation.passed && (
@@ -772,9 +818,11 @@ export default function RewindDashboard() {
           setCurrentUser(user);
           refreshData();
           showToast({
-            type: "success",
-            title: "Welcome to Rewind",
-            description: `Signed in as ${user.email}`,
+            type: user.emailVerified === false ? "info" : "success",
+            title: user.emailVerified === false ? "Verification Email Sent" : "Welcome to Rewind",
+            description: user.emailVerified === false
+              ? `Signed in as ${user.email}. Please check your inbox for the verification link.`
+              : `Signed in as ${user.email}`,
           });
         }}
 

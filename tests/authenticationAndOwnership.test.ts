@@ -33,6 +33,7 @@ import { GET as aiStatusGet } from "../src/app/api/ai/status/route";
 import { GET as limitsGet } from "../src/app/api/system/limits/route";
 import { GET as auditGet } from "../src/app/api/audit/route";
 import { POST as authGooglePost } from "../src/app/api/auth/google/route";
+import { POST as authVerifyEmailPost } from "../src/app/api/auth/verify-email/route";
 import { GET as workspaceFilesGet } from "../src/app/api/workspace/files/route";
 import { GET as workspaceFileGet } from "../src/app/api/workspace/file/route";
 
@@ -955,6 +956,110 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
       body: JSON.stringify({ idToken: "flood-blocked" }),
     });
     const blockedRes = await authGooglePost(blockedReq);
+    assert.strictEqual(blockedRes.status, 429);
+  });
+
+  // -------------------------------------------------------------------------
+  // 11. Email Verification & Configurable Verification Gate
+  // -------------------------------------------------------------------------
+  it("11.1. exposes emailVerified flag during registration and login", async () => {
+    const reg = await registerUser(
+      {
+        email: "verified_test@example.com",
+        password: "StrongPassword123!",
+        displayName: "Verified Tester",
+      },
+      testStore
+    );
+
+    assert.strictEqual(typeof reg.user.emailVerified, "boolean");
+
+    const login = await loginUser(
+      {
+        email: "verified_test@example.com",
+        password: "StrongPassword123!",
+      },
+      testStore
+    );
+
+    assert.strictEqual(typeof login.user.emailVerified, "boolean");
+  });
+
+  it("11.2. strictly enforces email verification before login when REQUIRE_EMAIL_VERIFICATION is enabled", async () => {
+    const oldVal = process.env.REQUIRE_EMAIL_VERIFICATION;
+    process.env.REQUIRE_EMAIL_VERIFICATION = "true";
+
+    try {
+      const reg = await registerUser(
+        {
+          email: "unverified_gated@example.com",
+          password: "StrongPassword123!",
+          displayName: "Gated Tester",
+        },
+        testStore
+      );
+      assert.strictEqual(reg.user.emailVerified, false);
+
+      // Attempting to login when unverified and REQUIRE_EMAIL_VERIFICATION=true throws
+      await assert.rejects(
+        async () => {
+          await loginUser(
+            {
+              email: "unverified_gated@example.com",
+              password: "StrongPassword123!",
+            },
+            testStore
+          );
+        },
+        {
+          message: /Please verify your email address before logging in/i,
+        }
+      );
+    } finally {
+      if (oldVal !== undefined) {
+        process.env.REQUIRE_EMAIL_VERIFICATION = oldVal;
+      } else {
+        delete process.env.REQUIRE_EMAIL_VERIFICATION;
+      }
+    }
+  });
+
+  it("11.3. verifies /api/auth/verify-email endpoint handles requests and enforces rate limiting", async () => {
+    // 1. Unauthenticated request without email returns 400
+    const emptyReq = new Request("http://localhost/api/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const emptyRes = await authVerifyEmailPost(emptyReq);
+    assert.strictEqual(emptyRes.status, 400);
+
+    // 2. Request with email dispatches verification
+    const validReq = new Request("http://localhost/api/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "user_to_verify@example.com" }),
+    });
+    const validRes = await authVerifyEmailPost(validReq);
+    assert.strictEqual(validRes.status, 200);
+    const validBody = await validRes.json();
+    assert.strictEqual(validBody.success, true);
+
+    // 3. Rate limiting blocks beyond 5 attempts per IP per minute
+    for (let i = 0; i < 5; i++) {
+      const floodReq = new Request("http://localhost/api/auth/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.77" },
+        body: JSON.stringify({ email: `flood-${i}@example.com` }),
+      });
+      await authVerifyEmailPost(floodReq);
+    }
+    const blockedReq = new Request("http://localhost/api/auth/verify-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.77" },
+      body: JSON.stringify({ email: "blocked@example.com" }),
+    });
+    const blockedRes = await authVerifyEmailPost(blockedReq);
     assert.strictEqual(blockedRes.status, 429);
   });
 });

@@ -136,6 +136,14 @@ export function TopBar({
               <span className="text-[10px] uppercase font-mono px-1 py-0.2 bg-cyan-950 text-cyan-300 rounded border border-cyan-800/60">
                 {currentUser.role}
               </span>
+              {currentUser.emailVerified === false && (
+                <span
+                  title="Email not verified"
+                  className="text-[10px] uppercase font-mono px-1.5 py-0.2 bg-amber-950 text-amber-300 rounded border border-amber-800/60"
+                >
+                  Unverified
+                </span>
+              )}
             </div>
             {onLogout && (
               <button

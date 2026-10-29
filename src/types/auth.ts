@@ -16,6 +16,7 @@ export interface AuthUser {
   createdAt: string;
   updatedAt: string;
   authProvider: "firebase" | "development" | "google" | "github";
+  emailVerified?: boolean;
 }
 
 export interface AuthSession {
