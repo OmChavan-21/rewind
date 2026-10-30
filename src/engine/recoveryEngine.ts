@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import os from "node:os";
 import type {
   Workspace,
   Snapshot,
@@ -43,12 +44,18 @@ export function getDefaultWorkspaceRoot(): string {
   if (process.env.REWIND_WORKSPACE_DIR) {
     return path.resolve(process.env.REWIND_WORKSPACE_DIR);
   }
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join(os.tmpdir(), "demo-workspace");
+  }
   return path.resolve(process.cwd(), "demo-workspace");
 }
 
 export function getDefaultStoreRoot(): string {
   if (process.env.REWIND_STORE_DIR) {
     return path.resolve(process.env.REWIND_STORE_DIR);
+  }
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join(os.tmpdir(), ".rewind_store");
   }
   return path.resolve(process.cwd(), ".rewind_store");
 }
