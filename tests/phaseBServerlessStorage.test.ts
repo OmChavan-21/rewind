@@ -576,13 +576,26 @@ describe("Rewind Phase B - Vercel Serverless Durable Storage Test Suite", () => 
     assert.strictEqual(balanceAfterRes.remaining, 10);
 
     // Commit task 1
-    await adapter.credits.commit(projId, "task_1", 30, "standard_refactor", userId);
+    await adapter.credits.commit(projId, "task_1", 30, "standard_refactor", userId, {
+      provider: "nebius",
+      model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+      promptTokens: 120,
+      completionTokens: 80,
+      totalTokens: 200,
+      providerCostUSD: 0.00005,
+    });
 
     // Idempotent test: committing task 1 a second time charges zero additional credits
     await adapter.credits.commit(projId, "task_1", 30, "standard_refactor", userId);
 
     const balanceAfterCommit = await adapter.credits.getBalance(projId, userId);
     assert.strictEqual(balanceAfterCommit.used, 30);
+    assert.deepStrictEqual(balanceAfterCommit.providerUsage, {
+      requests: 1,
+      promptTokens: 120,
+      completionTokens: 80,
+      totalTokens: 200,
+    });
     // Remaining in-flight = 60 (task 2 and task 3)
     assert.strictEqual(balanceAfterCommit.inFlightReserved, 60);
     assert.strictEqual(balanceAfterCommit.remaining, 10);

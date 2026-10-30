@@ -23,6 +23,7 @@ import type {
   ICreditStore,
   IRAGStore,
   CreditBalanceResult,
+  CreditUsageMetadata,
 } from "./storageTypes";
 import { StorageError } from "./storageTypes";
 import type { ProjectMetadata, ProjectSummary } from "../../types/project";
@@ -1076,6 +1077,15 @@ export class CloudStorageAdapter implements IStorageProvider {
           const data = doc.data() || {};
           const allowance = typeof data.allowance === "number" ? data.allowance : DEFAULT_ALLOWANCE;
           const used = typeof data.used === "number" ? data.used : 0;
+          const tasks = (data.tasks as Record<string, Record<string, unknown>>) || {};
+          const providerUsage = { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+          for (const task of Object.values(tasks)) {
+            if (!task || typeof task.totalTokens !== "number") continue;
+            providerUsage.requests += 1;
+            providerUsage.promptTokens += typeof task.promptTokens === "number" ? task.promptTokens : 0;
+            providerUsage.completionTokens += typeof task.completionTokens === "number" ? task.completionTokens : 0;
+            providerUsage.totalTokens += task.totalTokens;
+          }
           let inFlightReserved = 0;
           if (data.activeReservations && typeof data.activeReservations === "object") {
             for (const r of Object.values(data.activeReservations as Record<string, { amount: number }>)) {
@@ -1083,7 +1093,7 @@ export class CloudStorageAdapter implements IStorageProvider {
             }
           }
           const remaining = Math.max(0, allowance - used - inFlightReserved);
-          return { allowance, used, remaining, inFlightReserved };
+          return { allowance, used, remaining, inFlightReserved, providerUsage };
         } catch (err) {
           throw new StorageError(
             `Failed to get credit balance: ${err instanceof Error ? err.message : String(err)}`,
@@ -1174,7 +1184,8 @@ export class CloudStorageAdapter implements IStorageProvider {
         taskId: string,
         amount: number,
         complexity: string,
-        userId?: string
+        userId?: string,
+        usage?: CreditUsageMetadata
       ): Promise<void> => {
         validateProjectId(projectId);
         if (!userId) return;
@@ -1208,6 +1219,9 @@ export class CloudStorageAdapter implements IStorageProvider {
               credits: amount,
               chargedAt: new Date().toISOString(),
               complexity,
+              ...(usage
+                ? Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined))
+                : {}),
             };
 
             transaction.set(

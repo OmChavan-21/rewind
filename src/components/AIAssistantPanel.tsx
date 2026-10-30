@@ -65,7 +65,7 @@ interface AvailableModelItem {
   } | null;
 }
 
-const FALLBACK_NVIDIA_MODELS: AvailableModelItem[] = [
+const FALLBACK_NEBIUS_MODELS: AvailableModelItem[] = [
   {
     id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
     name: "Nemotron 3 Nano (Nebius)",
@@ -120,24 +120,6 @@ const FALLBACK_NVIDIA_MODELS: AvailableModelItem[] = [
       completionTokenCostUSD: 0.0000008,
     },
   },
-  {
-    id: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
-    name: "Llama 3.1 Nemotron (70B)",
-    tier: "standard",
-    capabilities: {
-      codeGeneration: 8,
-      instructionFollowing: 8,
-      securityAwareness: 8,
-      maxContextTokens: 131072,
-      reasoningSupport: false,
-    },
-    pricing: {
-      isVerified: false,
-      costStatus: "estimated",
-      promptTokenCostUSD: 0.0000005,
-      completionTokenCostUSD: 0.0000005,
-    },
-  },
 ];
 
 export function AIAssistantPanel({
@@ -150,7 +132,13 @@ export function AIAssistantPanel({
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"auto" | "manual">("auto");
   const [selectedModel, setSelectedModel] = useState<string>("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B");
-  const [availableModels, setAvailableModels] = useState<AvailableModelItem[]>(FALLBACK_NVIDIA_MODELS);
+  const [availableModels, setAvailableModels] = useState<AvailableModelItem[]>(FALLBACK_NEBIUS_MODELS);
+  const [providerUsage, setProviderUsage] = useState({
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+  });
   const [creditAllowance, setCreditAllowance] = useState<{
     totalAllowance: number;
     remainingCredits: number;
@@ -169,10 +157,11 @@ export function AIAssistantPanel({
 
   const isConnected = aiStatus?.state === "connected";
   const isUnconfigured = aiStatus?.state === "unconfigured" || !aiStatus;
-  const providerName =
-    aiStatus?.provider === "nvidia"
-      ? "NVIDIA API (integrate.api.nvidia.com)"
-      : "Nebius Token Factory";
+  const providerName = aiStatus?.provider === "nvidia"
+    ? "NVIDIA API"
+    : aiStatus?.provider === "nebius"
+    ? "Nebius Token Factory"
+    : "AI Provider";
 
   // Fetch initial models & credit allowance from /api/ai/status
   useEffect(() => {
@@ -204,6 +193,7 @@ export function AIAssistantPanel({
             usedCredits: data.creditAllowance.usedCredits,
           });
         }
+        if (data.providerUsage) setProviderUsage(data.providerUsage);
       } catch {
         // Fallbacks remain active
       }
@@ -382,6 +372,15 @@ export function AIAssistantPanel({
       if (data.creditAllowance) {
         setCreditAllowance(data.creditAllowance);
       }
+      const usage = data.routingMeta?.usage;
+      if (usage && typeof usage.totalTokens === "number") {
+        setProviderUsage((current) => ({
+          requests: current.requests + 1,
+          promptTokens: current.promptTokens + (usage.promptTokens || 0),
+          completionTokens: current.completionTokens + (usage.completionTokens || 0),
+          totalTokens: current.totalTokens + usage.totalTokens,
+        }));
+      }
 
       // Reload chat session messages and memory membrane
       if (activeSessionId) {
@@ -492,7 +491,7 @@ export function AIAssistantPanel({
               )}
             </div>
             <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-              Active Provider: <code className="text-cyan-300 font-semibold">{aiStatus?.provider || "nvidia"}</code> (developer eval tier)
+              Requests are served by <code className="text-cyan-300 font-semibold">{providerName}</code>; NVIDIA in a model name identifies the model publisher, not the API endpoint.
             </p>
             {aiStatus?.message && !isConnected && (
               <p className="text-[10px] text-rose-300 font-sans mt-0.5">
@@ -502,12 +501,12 @@ export function AIAssistantPanel({
           </div>
         </div>
 
-        {/* Free Allowance Badge & Action */}
+        {/* Rewind allowance is independent from the provider's account balance. */}
         <div className="flex items-center gap-3 self-end md:self-auto flex-wrap">
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs">
             <Coins className="w-4 h-4 text-amber-400" />
             <div className="flex flex-col">
-              <span className="text-[10px] text-slate-400 font-sans leading-none">Free Allowance:</span>
+              <span className="text-[10px] text-slate-400 font-sans leading-none">Rewind task credits:</span>
               <span className="font-bold font-mono">
                 <span className={creditAllowance && creditAllowance.remainingCredits <= 5 ? "text-rose-400" : "text-emerald-400"}>
                   {creditAllowance ? creditAllowance.remainingCredits : 100}
@@ -515,6 +514,10 @@ export function AIAssistantPanel({
                 <span className="text-slate-500 font-normal"> / {creditAllowance ? creditAllowance.totalAllowance : 100} credits</span>
               </span>
             </div>
+          </div>
+          <div className="text-[10px] text-slate-400 font-sans leading-relaxed">
+            Provider-reported usage: {providerUsage.totalTokens.toLocaleString()} tokens across {providerUsage.requests} requests.
+            <span className="block">This is not your Nebius wallet balance; check that in the Token Factory console.</span>
           </div>
 
           <button
@@ -532,18 +535,27 @@ export function AIAssistantPanel({
           <div className="flex items-center gap-2 font-mono">
             <Key className="w-4 h-4 text-amber-400" />
             <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">
-              Setup Guide: Connect NVIDIA API
+              Setup Guide: Connect {aiStatus?.provider === "nvidia" ? "NVIDIA API" : "Nebius Token Factory"}
             </h3>
           </div>
           <p className="text-xs text-slate-300 leading-relaxed">
-            Rewind uses real open-weights models served through NVIDIA API. To enable autonomous AI change proposals, configure your credentials in <code className="text-cyan-300 font-mono">.env.local</code>:
+            Rewind sends requests to the configured provider. For this deployment, configure the server-side provider key in Vercel Environment Variables:
           </p>
 
           <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-slate-300 space-y-1">
-            <p className="text-slate-400"># In .env.local (server-side only, ignored by git):</p>
-            <p className="text-emerald-400">NVIDIA_API_KEY=&quot;nvapi-your_api_key&quot;</p>
-            <p className="text-slate-400">NVIDIA_MODEL=&quot;nvidia/nemotron-3.5-lightning-30b-a3b&quot;</p>
-            <p className="text-slate-400">NVIDIA_BASE_URL=&quot;https://integrate.api.nvidia.com/v1&quot;</p>
+            {aiStatus?.provider === "nvidia" ? (
+              <>
+                <p className="text-emerald-400">AI_PROVIDER=&quot;nvidia&quot;</p>
+                <p className="text-emerald-400">NVIDIA_API_KEY=&quot;your_nvidia_key&quot;</p>
+                <p className="text-slate-400">NVIDIA_BASE_URL=&quot;https://integrate.api.nvidia.com/v1&quot;</p>
+              </>
+            ) : (
+              <>
+                <p className="text-emerald-400">AI_PROVIDER=&quot;nebius&quot;</p>
+                <p className="text-emerald-400">NEBIUS_API_KEY=&quot;your_nebius_token_factory_key&quot;</p>
+                <p className="text-slate-400">NEBIUS_MODEL=&quot;nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B&quot;</p>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2 text-[11px] text-slate-400 font-mono">
@@ -908,6 +920,9 @@ export function AIAssistantPanel({
               <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
                 Model: {proposal.model}
               </span>
+              <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 font-mono">
+                Served by {proposal.routingMeta?.routing.selectedProvider === "nebius" ? "Nebius Token Factory" : "NVIDIA API"}
+              </span>
               <span
                 className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
                   proposal.expectedValidationResult === "pass"
@@ -987,7 +1002,7 @@ export function AIAssistantPanel({
                           : "bg-slate-800 text-slate-400 border border-slate-700"
                       }`}
                     >
-                      {proposal.routingMeta.costMetrics.costStatus}
+                      {proposal.routingMeta.costMetrics.costStatus === "confirmed" ? "rate verified" : proposal.routingMeta.costMetrics.costStatus}
                     </span>
                   </div>
                   <div className="text-sm font-bold text-white">
@@ -996,9 +1011,9 @@ export function AIAssistantPanel({
                       : "Unavailable"}
                   </div>
                   <div className="text-[10px] text-slate-400 font-sans">
-                    {proposal.routingMeta.costMetrics.costStatus === "estimated"
-                      ? "NVIDIA developer eval rate — not commercial charge"
-                      : "Tracked from provider usage metrics"}
+                    {proposal.routingMeta.costMetrics.providerCostUSD !== null && proposal.routingMeta.usage
+                      ? "Calculated from provider-reported tokens × published rates; final billing is in the provider console."
+                      : "Provider billing is not directly queried by Rewind."}
                   </div>
                 </div>
 
@@ -1007,7 +1022,7 @@ export function AIAssistantPanel({
                   <div className="text-[10px] text-slate-400 uppercase tracking-wider flex items-center justify-between">
                     <span>Rewind Credits</span>
                     <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-400 border border-cyan-800 font-bold uppercase">
-                      Free Allowance
+                      Internal allowance
                     </span>
                   </div>
                   <div className="text-sm font-bold text-emerald-400">

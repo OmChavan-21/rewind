@@ -53,6 +53,7 @@ import {
 import {
   getProjectCreditBalance,
   readProjectCreditStore,
+  summarizeProviderUsage,
   writeProjectCreditStore,
 } from "../ai/dualAccounting";
 import {
@@ -304,7 +305,8 @@ export class LocalStorageAdapter implements IStorageProvider {
     return {
       async getBalance(projectId: string, _userId?: string): Promise<CreditBalanceResult> {
         void _userId;
-        return getProjectCreditBalance(projectId, storeRoot);
+        const balance = getProjectCreditBalance(projectId, storeRoot);
+        return { ...balance, providerUsage: summarizeProviderUsage(readProjectCreditStore(projectId, storeRoot)) };
       },
       async reserve(
         projectId: string,
@@ -324,7 +326,8 @@ export class LocalStorageAdapter implements IStorageProvider {
         taskId: string,
         amount: number,
         complexity: string,
-        _userId?: string
+        _userId?: string,
+        usage?: import("./storageTypes").CreditUsageMetadata
       ): Promise<void> {
         void _userId;
         const store = readProjectCreditStore(projectId, storeRoot);
@@ -336,6 +339,7 @@ export class LocalStorageAdapter implements IStorageProvider {
           credits: amount,
           chargedAt: new Date().toISOString(),
           complexity,
+          ...usage,
         };
         writeProjectCreditStore(projectId, store, storeRoot);
       },

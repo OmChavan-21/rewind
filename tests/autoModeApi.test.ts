@@ -441,4 +441,22 @@ describe("Phase 5 & 6: Rewind AI Auto Mode API & Accounting Integration", () => 
     assert.strictEqual(rawJson.includes("test_nvapi_key"), false);
     assert.strictEqual(rawJson.includes("apiKey"), false);
   });
+
+  it("11. Nebius health check uses the catalog default instead of a stale configured model", async () => {
+    process.env.AI_PROVIDER = "nebius";
+    process.env.NEBIUS_API_KEY = "test_nebius_key";
+    process.env.NEBIUS_MODEL = "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF";
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ data: [{ id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B" }] }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+
+    const req = new Request("http://localhost:3000/api/ai/status?projectId=demo-workspace");
+    const res = await statusRouteHandler(req);
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.provider, "nebius");
+    assert.strictEqual(data.status.model, "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B");
+    assert.strictEqual(data.status.state, "connected");
+  });
 });

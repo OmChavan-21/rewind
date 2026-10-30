@@ -4,7 +4,6 @@ import { getModelsForProvider } from "@/server/ai/modelCatalog";
 import { getActiveProvider } from "@/server/ai/providerRegistry";
 import {
   getCreditSchedule,
-  getProjectCreditBalance,
 } from "@/server/ai/dualAccounting";
 import { getContextRoots } from "@/server/workspaceContext";
 import {
@@ -14,6 +13,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "@/server/auth";
+import { getStorageProvider } from "@/server/storage/storageProvider";
 
 export async function GET(request: Request) {
   try {
@@ -21,17 +21,27 @@ export async function GET(request: Request) {
     const projectIdParam = searchParams.get("projectId") || undefined;
     const { storeRoot } = getContextRoots(projectIdParam);
     const activeProjectId = projectIdParam || "demo-workspace";
+    const storage = getStorageProvider(storeRoot);
+    let statusUser: Awaited<ReturnType<typeof requireAuthenticatedUser>> | undefined;
 
     // If querying a specific non-demo project's status, assert access
     if (projectIdParam && projectIdParam !== "demo-workspace") {
-      const user = await requireAuthenticatedUser(request, storeRoot);
-      await assertProjectAccessAsync(user, projectIdParam, storeRoot, "read");
+      statusUser = await requireAuthenticatedUser(request, storeRoot);
+      await assertProjectAccessAsync(statusUser, projectIdParam, storeRoot, "read");
+    }
+    if (storage.mode === "cloud" && !statusUser) {
+      statusUser = await requireAuthenticatedUser(request, storeRoot);
+      await assertProjectAccessAsync(statusUser, activeProjectId, storeRoot, "read");
     }
 
-    const status = await checkNebiusStatus();
     const activeProvider = getActiveProvider();
+    const providerModels = getModelsForProvider(activeProvider);
+    const statusModel = providerModels.find((model) => model.isDefault)?.id || providerModels[0]?.id;
+    // Health-check the model Auto Router will actually use by default, rather than a stale
+    // NEBIUS_MODEL value that may no longer exist in the provider catalog.
+    const status = await checkNebiusStatus(statusModel);
 
-    const availableModels = getModelsForProvider(activeProvider).map((m) => ({
+    const availableModels = providerModels.map((m) => ({
       id: m.id,
       name: m.name,
       tier: m.tier,
@@ -50,7 +60,7 @@ export async function GET(request: Request) {
         : null,
     }));
 
-    const creditBalance = getProjectCreditBalance(activeProjectId, storeRoot);
+    const creditBalance = await storage.credits.getBalance(activeProjectId, statusUser?.uid);
 
     return NextResponse.json({
       status,
@@ -62,6 +72,12 @@ export async function GET(request: Request) {
         remainingCredits: creditBalance.remaining,
         usedCredits: creditBalance.used,
         schedule: getCreditSchedule(),
+      },
+      providerUsage: creditBalance.providerUsage || {
+        requests: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
       },
     });
   } catch (err: unknown) {

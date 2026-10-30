@@ -164,12 +164,12 @@ describe("Phase 3 & 4 - Task Classifier, Auto Router & Dual Accounting Test Suit
   // ---------------------------------------------------------------------------
   // 3. Dual Accounting: Provider Cost vs Rewind Credits
   // ---------------------------------------------------------------------------
-  it("10. calculates confirmed provider cost when usage tokens and verified pricing exist", () => {
+  it("10. estimates provider cost from reported usage and verified published pricing", () => {
     const nebiusModel = getModelMetadata("nvidia/Llama-3.1-Nemotron-70B-Instruct-HF", "nebius");
     const usage = { promptTokens: 1000, completionTokens: 500, totalTokens: 1500 };
 
     const costRecord = calculateProviderCost(nebiusModel, usage);
-    assert.strictEqual(costRecord.costStatus, "confirmed");
+    assert.strictEqual(costRecord.costStatus, "estimated");
     // (1000 * 0.0000006) + (500 * 0.0000018) = 0.0006 + 0.0009 = 0.0015 USD
     assert.strictEqual(costRecord.providerCostUSD, 0.0015);
     assert.strictEqual(costRecord.promptTokens, 1000);

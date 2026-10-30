@@ -101,8 +101,31 @@ export interface ProjectCreditStoreData {
       credits: number;
       chargedAt: string;
       complexity: string;
+      provider?: string;
+      model?: string;
+      promptTokens?: number;
+      completionTokens?: number;
+      totalTokens?: number;
+      providerCostUSD?: number | null;
     }
   >;
+}
+
+export function summarizeProviderUsage(data: ProjectCreditStoreData) {
+  const summary = {
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+  };
+  for (const task of Object.values(data.tasks)) {
+    if (typeof task.totalTokens !== "number") continue;
+    summary.requests += 1;
+    summary.promptTokens += task.promptTokens || 0;
+    summary.completionTokens += task.completionTokens || 0;
+    summary.totalTokens += task.totalTokens;
+  }
+  return summary;
 }
 
 function getCreditStorePath(projectId: string, storeRoot?: string): string {
@@ -275,7 +298,8 @@ export function resetProjectCreditStore(projectId?: string, storeRoot?: string):
 }
 
 /**
- * Computes AI Provider Cost ($ USD) based on actual usage and verified pricing.
+ * Estimates AI Provider Cost ($ USD) from provider-reported usage and published rates.
+ * This is not a provider invoice or account-balance query.
  */
 export function calculateProviderCost(
   model: ModelMetadata,
@@ -293,7 +317,7 @@ export function calculateProviderCost(
     };
   }
 
-  const { promptTokenCostUSD, completionTokenCostUSD, isVerified, source, verifiedAt } =
+  const { promptTokenCostUSD, completionTokenCostUSD, source, verifiedAt } =
     model.pricing;
 
   // Case 1: Trustworthy actual usage returned from provider
@@ -304,8 +328,9 @@ export function calculateProviderCost(
 
     return {
       providerCostUSD: roundedCost,
-      // Confirmed only if pricing is backed by official commercial rates; otherwise estimated (eval tier)
-      costStatus: isVerified ? "confirmed" : "estimated",
+      // Token usage is real, but the final provider invoice is not fetched by this app.
+      // Keep the amount labelled estimated even when the published rate is verified.
+      costStatus: "estimated",
       pricingSource: source,
       pricingVerifiedAt: verifiedAt,
       promptTokens: usage.promptTokens,
@@ -472,6 +497,12 @@ export function accountTaskExecution(options: AccountTaskOptions): AccountingRes
           credits: creditsCharged,
           chargedAt: new Date().toISOString(),
           complexity,
+          provider: model.provider,
+          model: model.id,
+          promptTokens: usage?.promptTokens,
+          completionTokens: usage?.completionTokens,
+          totalTokens: usage?.totalTokens,
+          providerCostUSD: providerCost.providerCostUSD,
         };
         writeProjectCreditStore(projectId, data, storeRoot);
       }

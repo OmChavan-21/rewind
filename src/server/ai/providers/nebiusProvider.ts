@@ -146,7 +146,7 @@ export class NebiusProviderClient implements AIProviderClient {
             modelListed: false,
             generationVerified: false,
             availableModels: catalogModels.slice(0, 10),
-            message: `Connected to Nebius Token Factory, but configured model '${targetModel}' is not in the account catalog. Available models include: ${catalogModels.slice(0, 5).join(", ")}. Set NEBIUS_MODEL in .env.local to a supported model.`,
+            message: `Connected to Nebius Token Factory, but configured model '${targetModel}' is not in the account catalog. Available models include: ${catalogModels.slice(0, 5).join(", ")}. Set NEBIUS_MODEL to one of these IDs in the deployment's server-side environment.`,
           };
         }
 
@@ -349,7 +349,7 @@ export class NebiusProviderClient implements AIProviderClient {
         if (response.status === 401 || response.status === 403) {
           throw new AIError(
             "authentication_failure",
-            `Nebius Token Factory authentication failed (HTTP ${response.status}). Please verify NEBIUS_API_KEY in .env.local.`,
+            `Nebius Token Factory authentication failed (HTTP ${response.status}). Verify NEBIUS_API_KEY in the deployment's server-side environment.`,
             { statusCode: response.status, provider: "nebius", model }
           );
         }
@@ -362,7 +362,7 @@ export class NebiusProviderClient implements AIProviderClient {
               statusCode: 404,
               provider: "nebius",
               model,
-              suggestion: "Update NEBIUS_MODEL in .env.local to a supported active model.",
+              suggestion: "Set NEBIUS_MODEL to a supported active catalog ID in the deployment's server-side environment. On Vercel, update the environment variable and redeploy.",
             }
           );
         }

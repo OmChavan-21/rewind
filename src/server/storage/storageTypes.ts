@@ -100,6 +100,21 @@ export interface CreditBalanceResult {
   used: number;
   remaining: number;
   inFlightReserved: number;
+  providerUsage?: {
+    requests: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+}
+
+export interface CreditUsageMetadata {
+  provider: string;
+  model: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  providerCostUSD?: number | null;
 }
 
 export interface ICreditStore {
@@ -115,7 +130,8 @@ export interface ICreditStore {
     taskId: string,
     amount: number,
     complexity: string,
-    userId?: string
+    userId?: string,
+    usage?: CreditUsageMetadata
   ): Promise<void>;
   release(projectId: string, taskId: string, userId?: string): Promise<void>;
 }

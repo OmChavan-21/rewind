@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "node:crypto";
 import { getContextRoots } from "@/server/workspaceContext";
 import { listPermittedWorkspaceFiles, readPermittedTextFile } from "@/engine/recoveryEngine";
 import { generateChangeProposalWithMeta, AIError } from "@/server/nebiusService";
@@ -20,6 +21,8 @@ import { SecurityError } from "@/security/boundaries";
 import type { AIProposalRoutingMeta } from "@/types/router";
 import { runSelfRepairLoop } from "@/server/ai/selfRepairEngine";
 import { verifyCandidatePatchInSandbox } from "@/engine/patchSandbox";
+import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import type { IStorageProvider } from "@/server/storage/storageTypes";
 import type { SelfRepairResult } from "@/types/ai";
 import { assembleDeveloperContext } from "@/server/ai/contextAssembler";
 import { addChatMessage, getChatSession } from "@/engine/chatMemoryStore";
@@ -51,6 +54,7 @@ export async function POST(request: Request) {
   }
 
   let reservationId: string | undefined;
+  let cloudReservation: { storage: IStorageProvider; taskId: string; userId: string } | undefined;
   let activeProjectId = "demo-workspace";
 
   try {
@@ -77,6 +81,7 @@ export async function POST(request: Request) {
 
     const user = await requireAuthenticatedUser(request, storeRoot);
     await assertProjectAccessAsync(user, activeProjectId, storeRoot, "write");
+    const storage = getStorageProvider(storeRoot);
 
     const permittedFiles = listPermittedWorkspaceFiles(workspaceRoot);
 
@@ -154,13 +159,26 @@ export async function POST(request: Request) {
     });
 
     // Concurrency reservation: atomic in-memory reservation prevents concurrent race bypass
-    const reservation = checkAndReserveCredits(
-      activeProjectId,
-      requiredCredits,
-      undefined,
-      storeRoot
-    );
-    reservationId = reservation.reservationId;
+    if (storage.mode === "cloud") {
+      const balance = await storage.credits.getBalance(activeProjectId, user.uid);
+      if (balance.remaining < requiredCredits) {
+        throw new BudgetExceededError("credits", requiredCredits, balance.remaining);
+      }
+      const taskId = `ai_${crypto.randomUUID()}`;
+      const reservation = await storage.credits.reserve(activeProjectId, taskId, requiredCredits, user.uid);
+      if (!reservation.success) {
+        throw new BudgetExceededError("credits", requiredCredits, balance.remaining);
+      }
+      cloudReservation = { storage, taskId, userId: user.uid };
+    } else {
+      const reservation = checkAndReserveCredits(
+        activeProjectId,
+        requiredCredits,
+        undefined,
+        storeRoot
+      );
+      reservationId = reservation.reservationId;
+    }
 
     // 4. Model Proposal Generation via active provider (NVIDIA) with augmented developer context
     let result;
@@ -172,8 +190,13 @@ export async function POST(request: Request) {
       });
     } catch (genErr) {
       // Provider error, timeout, or network issue: release reservation so user is NOT charged!
-      releaseCreditReservation(reservation.reservationId);
-      reservationId = undefined;
+      if (cloudReservation) {
+        await cloudReservation.storage.credits.release(activeProjectId, cloudReservation.taskId, user.uid);
+        cloudReservation = undefined;
+      } else {
+        releaseCreditReservation(reservationId!);
+        reservationId = undefined;
+      }
       throw genErr;
     }
 
@@ -185,20 +208,39 @@ export async function POST(request: Request) {
       outcome: "success",
       usage: result.usage,
       estimatedPromptTokens: classification.estimatedPromptTokens,
-      projectId: activeProjectId,
+      projectId: storage.mode === "cloud" ? undefined : activeProjectId,
       storeRoot,
     });
 
     // Commit credit deduction to project store
-    commitCreditReservation(
-      reservation.reservationId,
-      activeProjectId,
-      result.proposal.id,
-      accountingResult.creditAccounting.creditsCharged,
-      classification.complexity,
-      storeRoot
-    );
-    reservationId = undefined;
+    if (cloudReservation) {
+      await cloudReservation.storage.credits.commit(
+        activeProjectId,
+        cloudReservation.taskId,
+        accountingResult.creditAccounting.creditsCharged,
+        classification.complexity,
+        user.uid,
+        {
+          provider: decision.selectedProvider,
+          model: decision.selectedModel.id,
+          promptTokens: result.usage?.promptTokens,
+          completionTokens: result.usage?.completionTokens,
+          totalTokens: result.usage?.totalTokens,
+          providerCostUSD: accountingResult.providerCost.providerCostUSD,
+        }
+      );
+      cloudReservation = undefined;
+    } else {
+      commitCreditReservation(
+        reservationId!,
+        activeProjectId,
+        result.proposal.id,
+        accountingResult.creditAccounting.creditsCharged,
+        classification.complexity,
+        storeRoot
+      );
+      reservationId = undefined;
+    }
 
     // 6. Compiler-in-the-Loop Self-Repair & Candidate Staging Verification
     let repairOutcome: SelfRepairResult | undefined;
@@ -230,7 +272,9 @@ export async function POST(request: Request) {
     }
 
     // 7. Assemble Full Routing & Accounting Metadata
-    const creditBalance = getProjectCreditBalance(activeProjectId, storeRoot);
+    const creditBalance = storage.mode === "cloud"
+      ? await storage.credits.getBalance(activeProjectId, user.uid)
+      : getProjectCreditBalance(activeProjectId, storeRoot);
 
     const routingMeta: AIProposalRoutingMeta = {
       routing: decision,
@@ -297,6 +341,9 @@ export async function POST(request: Request) {
           },
     });
   } catch (err: unknown) {
+    if (cloudReservation) {
+      await cloudReservation.storage.credits.release(activeProjectId, cloudReservation.taskId, cloudReservation.userId);
+    }
     if (reservationId) {
       releaseCreditReservation(reservationId);
     }
@@ -322,6 +369,18 @@ export async function POST(request: Request) {
           requested: err.requested,
           limit: err.limit,
           suggestion: "Free credit allowance exhausted for this project. Free allowance resets per project.",
+        },
+        { status: 429 }
+      );
+    }
+
+    if (err instanceof StorageError && err.code === "BUDGET_EXCEEDED") {
+      return NextResponse.json(
+        {
+          error: err.message,
+          category: "rate_limit",
+          budgetExceeded: true,
+          budgetType: "credits",
         },
         { status: 429 }
       );
