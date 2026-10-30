@@ -30,6 +30,7 @@ import type { PermittedFile, Snapshot, AgentAction } from "../../types/recovery"
 import type { ChatSession, ChatMessage } from "../../types/chat";
 import type { ProjectMemory } from "../../types/memory";
 import type { RAGDocument, DocumentChunk, VectorSearchResult } from "../../types/rag";
+import { INITIAL_DEMO_PROJECT } from "../../engine/demoWorkspace";
 import { getFirestoreDb, getFirebaseStorageBucket } from "../firebaseService";
 import { FirestoreStorageBucket } from "./firestoreStorageBucket";
 import {
@@ -176,6 +177,9 @@ export class CloudStorageAdapter implements IStorageProvider {
   private async assertProjectOwnership(projectId: string, userId?: string): Promise<void> {
     validateProjectId(projectId);
     if (projectId === DEFAULT_DEMO_PROJECT.id) {
+      if (!userId) {
+        throw new StorageError("User ID is required to access a demo workspace", "FORBIDDEN", 403);
+      }
       return;
     }
     if (userId) {
@@ -192,6 +196,22 @@ export class CloudStorageAdapter implements IStorageProvider {
         if (err instanceof StorageError) throw err;
       }
     }
+  }
+
+  private workspacePrefix(projectId: string, userId?: string): string {
+    if (projectId === DEFAULT_DEMO_PROJECT.id) {
+      if (!userId) throw new StorageError("User ID is required to access a demo workspace", "FORBIDDEN", 403);
+      return `users/${userId}/projects/${projectId}/workspace/`;
+    }
+    return `projects/${projectId}/workspace/`;
+  }
+
+  private snapshotFilesPrefix(projectId: string, snapshotId: string, userId?: string): string {
+    if (projectId === DEFAULT_DEMO_PROJECT.id) {
+      if (!userId) throw new StorageError("User ID is required to access a demo workspace", "FORBIDDEN", 403);
+      return `users/${userId}/projects/${projectId}/snapshots/${snapshotId}/files/`;
+    }
+    return `projects/${projectId}/snapshots/${snapshotId}/files/`;
   }
 
   get projects(): IProjectStore {
@@ -341,10 +361,20 @@ export class CloudStorageAdapter implements IStorageProvider {
       listFiles: async (projectId: string, _userId?: string): Promise<PermittedFile[]> => {
         await this.assertProjectOwnership(projectId, _userId);
         const bucket = await this.getBucket();
-        const prefix = `projects/${projectId}/workspace/`;
+        const prefix = this.workspacePrefix(projectId, _userId);
 
         try {
           const [files] = await bucket.getFiles({ prefix });
+          if (projectId === DEFAULT_DEMO_PROJECT.id && files.length === 0) {
+            for (const [relativePath, content] of Object.entries(INITIAL_DEMO_PROJECT)) {
+              await bucket.file(`${prefix}${relativePath}`).save(Buffer.from(content, "utf-8"), {
+                resumable: false,
+                metadata: { contentType: "text/plain; charset=utf-8" },
+              });
+            }
+            const [seededFiles] = await bucket.getFiles({ prefix });
+            files.push(...seededFiles);
+          }
           const permittedFiles: PermittedFile[] = [];
 
           for (const file of files) {
@@ -383,7 +413,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         }
 
         const bucket = await this.getBucket();
-        const cloudPath = `projects/${projectId}/workspace/${normalized}`;
+        const cloudPath = `${this.workspacePrefix(projectId, _userId)}${normalized}`;
         const file = bucket.file(cloudPath);
 
         try {
@@ -419,7 +449,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         validateFileSize(buffer.length);
 
         const bucket = await this.getBucket();
-        const cloudPath = `projects/${projectId}/workspace/${normalized}`;
+        const cloudPath = `${this.workspacePrefix(projectId, _userId)}${normalized}`;
         const file = bucket.file(cloudPath);
 
         try {
@@ -445,7 +475,7 @@ export class CloudStorageAdapter implements IStorageProvider {
         await this.assertProjectOwnership(projectId, _userId);
         const normalized = normalizeRelativePath(relativePath);
         const bucket = await this.getBucket();
-        const cloudPath = `projects/${projectId}/workspace/${normalized}`;
+        const cloudPath = `${this.workspacePrefix(projectId, _userId)}${normalized}`;
         const file = bucket.file(cloudPath);
 
         try {
@@ -551,7 +581,7 @@ export class CloudStorageAdapter implements IStorageProvider {
           // 1. Upload immutable file copies to Cloud Storage
           for (const [relPath, content] of fileContents.entries()) {
             const normalized = normalizeRelativePath(relPath);
-            const targetCloudPath = `projects/${projectId}/snapshots/${snapshot.id}/files/${normalized}`;
+            const targetCloudPath = `${this.snapshotFilesPrefix(projectId, snapshot.id, userId)}${normalized}`;
             const file = bucket.file(targetCloudPath);
             await file.save(Buffer.from(content, "utf-8"), {
               resumable: false,
@@ -601,8 +631,8 @@ export class CloudStorageAdapter implements IStorageProvider {
         }
 
         const bucket = await this.getBucket();
-        const snapPrefix = `projects/${projectId}/snapshots/${snapshotId}/files/`;
-        const wsPrefix = `projects/${projectId}/workspace/`;
+        const snapPrefix = this.snapshotFilesPrefix(projectId, snapshotId, userId);
+        const wsPrefix = this.workspacePrefix(projectId, userId);
 
         // 1. STAGE: Pre-download all snapshot files into memory before touching workspace.
         const stagedFiles = new Map<string, Buffer>();
