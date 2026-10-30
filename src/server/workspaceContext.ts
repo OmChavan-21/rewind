@@ -16,8 +16,14 @@ import { validateProjectId, SecurityError } from "../security/boundaries";
 export function getContextRoots(projectId?: string) {
   const storeRoot = getDefaultStoreRoot();
   const registry = loadProjectsRegistry(storeRoot);
+  const cloudStorageRequired =
+    process.env.REQUIRE_CLOUD_STORAGE === "true" ||
+    process.env.REWIND_STORAGE_PROVIDER === "cloud" ||
+    (process.env.NODE_ENV === "production" && process.env.REWIND_ALLOW_LOCAL_STORAGE_IN_PROD !== "true");
 
-  if (projectId) {
+  // In cloud mode, Firestore is the source of truth for project ownership and
+  // existence. The local project registry does not contain cloud-created IDs.
+  if (projectId && !cloudStorageRequired) {
     validateProjectId(projectId);
     if (!registry.projects[projectId] && projectId !== "demo-workspace") {
       throw new SecurityError(`Project '${projectId}' does not exist.`);

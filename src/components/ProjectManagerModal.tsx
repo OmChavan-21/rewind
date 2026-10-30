@@ -37,7 +37,7 @@ export function ProjectManagerModal({
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
-  const [template, setTemplate] = useState<"demo" | "empty">("demo");
+  const [template, setTemplate] = useState<"demo" | "empty">("empty");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

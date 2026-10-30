@@ -123,7 +123,7 @@ export default function RewindDashboard() {
         if (wsData.validation) setValidation(wsData.validation);
         if (snapData.snapshots) setSnapshots(snapData.snapshots);
         if (actData.actions) setActions(actData.actions);
-        if (fileData.files) setFiles(fileData.files);
+        setFiles(Array.isArray(fileData.files) ? fileData.files : []);
         if (aiData.status) setAiStatus(aiData.status);
         if (projData.projects) setProjects(projData.projects);
         if (diagData) setDiagnosticsResult(diagData);
@@ -259,6 +259,8 @@ export default function RewindDashboard() {
       setIsLoading(true);
       const res = await fetch(`/api/projects/${projectId}`, { method: "POST" });
       if (!res.ok) throw new Error("Failed to switch project");
+      setFiles([]);
+      setSelectedFileForExplorer("");
       setActiveProjectId(projectId);
       showToast({
         type: "info",
@@ -297,6 +299,8 @@ export default function RewindDashboard() {
       title: "Project Created",
       description: `New isolated project '${data.project.name}' initialized.`,
     });
+    setFiles([]);
+    setSelectedFileForExplorer("");
     setActiveProjectId(data.project.id);
     await refreshData(data.project.id);
   };

@@ -12,6 +12,7 @@ import {
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 import type { ProjectMetadata } from "@/types/project";
+import { INITIAL_DEMO_PROJECT } from "@/engine/demoWorkspace";
 
 export async function GET(request: Request) {
   try {
@@ -68,15 +69,21 @@ export async function POST(request: Request) {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         workspacePath: `projects/${uniqueId}`,
-        fileCount: 1,
+        fileCount: template === "demo" ? Object.keys(INITIAL_DEMO_PROJECT).length : 1,
         totalSizeBytes: 0,
         snapshotCount: 0,
         status: "active",
         userId: user.uid,
       };
       await provider.projects.saveProject(newProject, user.uid);
-      const starterReadme = `# ${name}\n\n${description || "Created with Rewind."}\n\nWorkspace initialized: ${new Date().toISOString()}\n`;
-      await provider.workspace.writeFile(newProject.id, "README.md", starterReadme, user.uid);
+      if (template === "demo") {
+        for (const [relativePath, content] of Object.entries(INITIAL_DEMO_PROJECT)) {
+          await provider.workspace.writeFile(newProject.id, relativePath, content, user.uid);
+        }
+      } else {
+        const starterReadme = `# ${name}\n\n${description || "Created with Rewind."}\n\nWorkspace initialized: ${new Date().toISOString()}\n`;
+        await provider.workspace.writeFile(newProject.id, "README.md", starterReadme, user.uid);
+      }
     }
 
     const summary = await provider.projects.listProjects(user.uid);
