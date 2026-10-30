@@ -13,7 +13,7 @@ import type {
 import { AIError, parseFetchError } from "../aiError";
 
 export const DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
-export const DEFAULT_NEBIUS_MODEL = "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF";
+export const DEFAULT_NEBIUS_MODEL = "nvidia/Nemotron-3_5-Lightning";
 
 function sanitizeEnvVal(val?: string): string {
   if (!val) return "";

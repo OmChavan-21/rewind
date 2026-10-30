@@ -99,14 +99,58 @@ export const MODEL_CATALOG: Record<string, ModelMetadata> = {
   },
 
   // ---------------------------------------------------------------------------
-  // Nebius Token Factory Models (Inactive by Default - Staged for Production)
+  // Nebius Token Factory Models (Active Hackathon Provider)
   // ---------------------------------------------------------------------------
+  "nvidia/Nemotron-3_5-Lightning": {
+    id: "nvidia/Nemotron-3_5-Lightning",
+    name: "Nemotron 3.5 Lightning (Nebius)",
+    provider: "nebius",
+    tier: "economy",
+    isDefault: true,
+    recommendedComplexity: "lightweight_analysis",
+    capabilities: {
+      codeGeneration: 8.5,
+      instructionFollowing: 9.0,
+      securityAwareness: 8.0,
+      maxContextTokens: 131072,
+      reasoningSupport: false,
+    },
+    pricing: {
+      promptTokenCostUSD: 0.0000002, // $0.20 per 1M tokens
+      completionTokenCostUSD: 0.0000006, // $0.60 per 1M tokens
+      source: "Nebius Token Factory Published Pricing Schedule",
+      verifiedAt: "2026-10-25T00:00:00.000Z",
+      isVerified: true,
+    },
+  },
+  "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-Nebius": {
+    id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+    name: "Nemotron 3 Nano (Nebius)",
+    provider: "nebius",
+    tier: "economy",
+    isDefault: false,
+    recommendedComplexity: "simple_explanation",
+    capabilities: {
+      codeGeneration: 7.5,
+      instructionFollowing: 8.5,
+      securityAwareness: 7.5,
+      maxContextTokens: 32768,
+      reasoningSupport: false,
+    },
+    pricing: {
+      promptTokenCostUSD: 0.00000015,
+      completionTokenCostUSD: 0.00000045,
+      source: "Nebius Token Factory Published Pricing Schedule",
+      verifiedAt: "2026-10-25T00:00:00.000Z",
+      isVerified: true,
+    },
+  },
   "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF": {
     id: "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
     name: "Llama 3.1 Nemotron 70B (Nebius)",
     provider: "nebius",
     tier: "standard",
-    isDefault: true,
+    isDefault: false,
     recommendedComplexity: "standard_refactor",
     capabilities: {
       codeGeneration: 9.0,
