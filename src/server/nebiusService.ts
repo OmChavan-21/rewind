@@ -445,7 +445,7 @@ Return the proposed modifications as the exact JSON schema requested.`;
       { role: "user", content: userMessage },
     ],
     temperature: options?.temperature ?? 0.2,
-    maxTokens: options?.maxTokens ?? 4096,
+    maxTokens: options?.maxTokens ?? 2048,
     responseFormat: { type: "json_object" },
     enableThinking: options?.enableThinking,
   });

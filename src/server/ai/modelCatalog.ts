@@ -106,7 +106,7 @@ export const MODEL_CATALOG: Record<string, ModelMetadata> = {
     name: "Nemotron 3.5 Lightning (Nebius)",
     provider: "nebius",
     tier: "economy",
-    isDefault: true,
+    isDefault: false,
     recommendedComplexity: "lightweight_analysis",
     capabilities: {
       codeGeneration: 8.5,
@@ -128,13 +128,13 @@ export const MODEL_CATALOG: Record<string, ModelMetadata> = {
     name: "Nemotron 3 Nano (Nebius)",
     provider: "nebius",
     tier: "economy",
-    isDefault: false,
-    recommendedComplexity: "simple_explanation",
+    isDefault: true,
+    recommendedComplexity: "standard_refactor",
     capabilities: {
-      codeGeneration: 7.5,
-      instructionFollowing: 8.5,
-      securityAwareness: 7.5,
-      maxContextTokens: 32768,
+      codeGeneration: 8.8,
+      instructionFollowing: 9.0,
+      securityAwareness: 8.5,
+      maxContextTokens: 65536,
       reasoningSupport: false,
     },
     pricing: {
@@ -231,7 +231,7 @@ export function getDefaultModelForProvider(provider: AIProvider): ModelMetadata 
   const fallbackId =
     provider === "nvidia"
       ? "nvidia/nemotron-3.5-lightning-30b-a3b"
-      : "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF";
+      : "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B";
 
   return {
     id: fallbackId,

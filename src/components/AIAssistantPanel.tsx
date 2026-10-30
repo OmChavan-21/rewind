@@ -67,39 +67,39 @@ interface AvailableModelItem {
 
 const FALLBACK_NVIDIA_MODELS: AvailableModelItem[] = [
   {
-    id: "nvidia/nemotron-3.5-lightning-30b-a3b",
-    name: "Nemotron 3.5 Lightning (30B)",
-    tier: "economy",
-    capabilities: {
-      codeGeneration: 7,
-      instructionFollowing: 8,
-      securityAwareness: 6,
-      maxContextTokens: 131072,
-      reasoningSupport: false,
-    },
-    pricing: {
-      isVerified: false,
-      costStatus: "estimated",
-      promptTokenCostUSD: 0.0000002,
-      completionTokenCostUSD: 0.0000002,
-    },
-  },
-  {
     id: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
-    name: "Nemotron 3 Nano (30B)",
+    name: "Nemotron 3 Nano (Nebius)",
     tier: "economy",
     capabilities: {
-      codeGeneration: 6,
-      instructionFollowing: 7,
-      securityAwareness: 5,
+      codeGeneration: 8,
+      instructionFollowing: 9,
+      securityAwareness: 8,
       maxContextTokens: 65536,
       reasoningSupport: false,
     },
     pricing: {
-      isVerified: false,
-      costStatus: "estimated",
+      isVerified: true,
+      costStatus: "confirmed",
       promptTokenCostUSD: 0.00000015,
-      completionTokenCostUSD: 0.00000015,
+      completionTokenCostUSD: 0.00000045,
+    },
+  },
+  {
+    id: "nvidia/Nemotron-3_5-Lightning",
+    name: "Nemotron 3.5 Lightning (Nebius)",
+    tier: "economy",
+    capabilities: {
+      codeGeneration: 8.5,
+      instructionFollowing: 9,
+      securityAwareness: 8,
+      maxContextTokens: 131072,
+      reasoningSupport: false,
+    },
+    pricing: {
+      isVerified: true,
+      costStatus: "confirmed",
+      promptTokenCostUSD: 0.0000002,
+      completionTokenCostUSD: 0.0000006,
     },
   },
   {
@@ -149,7 +149,7 @@ export function AIAssistantPanel({
 }: AIAssistantPanelProps) {
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<"auto" | "manual">("auto");
-  const [selectedModel, setSelectedModel] = useState<string>("nvidia/nemotron-3.5-lightning-30b-a3b");
+  const [selectedModel, setSelectedModel] = useState<string>("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B");
   const [availableModels, setAvailableModels] = useState<AvailableModelItem[]>(FALLBACK_NVIDIA_MODELS);
   const [creditAllowance, setCreditAllowance] = useState<{
     totalAllowance: number;
@@ -185,6 +185,17 @@ export function AIAssistantPanel({
         if (!isMounted) return;
         if (Array.isArray(data.availableModels) && data.availableModels.length > 0) {
           setAvailableModels(data.availableModels);
+          const defaultModel = data.availableModels.find(
+            (m: AvailableModelItem & { isDefault?: boolean }) => m.isDefault
+          );
+          const preferredId = defaultModel?.id || data.availableModels[0]?.id;
+          if (preferredId) {
+            setSelectedModel((prev) =>
+              data.availableModels.some((m: AvailableModelItem) => m.id === prev)
+                ? prev
+                : preferredId
+            );
+          }
         }
         if (data.creditAllowance) {
           setCreditAllowance({

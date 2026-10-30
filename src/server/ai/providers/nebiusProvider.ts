@@ -13,7 +13,7 @@ import type {
 import { AIError, parseFetchError } from "../aiError";
 
 export const DEFAULT_NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1";
-export const DEFAULT_NEBIUS_MODEL = "nvidia/Nemotron-3_5-Lightning";
+export const DEFAULT_NEBIUS_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B";
 
 function sanitizeEnvVal(val?: string): string {
   if (!val) return "";
@@ -277,7 +277,7 @@ export class NebiusProviderClient implements AIProviderClient {
     }
 
     const completionEndpoint = `${baseUrl}/chat/completions`;
-    const timeoutSec = 60;
+    const timeoutSec = 90;
     const startTime = Date.now();
 
     const controller = new AbortController();
@@ -288,7 +288,7 @@ export class NebiusProviderClient implements AIProviderClient {
         model,
         messages: request.messages,
         temperature: request.temperature ?? 0.2,
-        max_tokens: request.maxTokens ?? 4096,
+        max_tokens: request.maxTokens ?? 2048,
       };
 
       if (request.responseFormat) {
@@ -318,7 +318,7 @@ export class NebiusProviderClient implements AIProviderClient {
             model,
             messages: request.messages,
             temperature: request.temperature ?? 0.2,
-            max_tokens: request.maxTokens ?? 4096,
+            max_tokens: request.maxTokens ?? 2048,
           };
           try {
             response = await fetch(completionEndpoint, {

@@ -32,6 +32,8 @@ import {
   NotFoundError,
 } from "@/server/auth";
 
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   const rateLimitRes = await enforceRateLimitAsync(request, "ai_propose", 15, 60_000);
   if (rateLimitRes) {

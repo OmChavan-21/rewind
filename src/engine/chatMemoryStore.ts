@@ -147,7 +147,11 @@ export function createChatSession(
     projectId,
     userId,
     title,
-    activeModel: request.model || "nvidia/nemotron-3.5-lightning-30b-a3b",
+    activeModel:
+      request.model ||
+      (process.env.AI_PROVIDER === "nebius"
+        ? process.env.NEBIUS_MODEL || "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+        : "nvidia/nemotron-3.5-lightning-30b-a3b"),
     routingMode: request.routingMode || "auto",
     messageCount: 0,
     extractedMemoriesCount: 0,

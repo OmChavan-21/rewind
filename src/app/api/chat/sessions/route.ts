@@ -92,7 +92,11 @@ export async function POST(request: Request) {
         messageCount: 0,
         extractedMemoriesCount: 0,
         lastMessageAt: new Date().toISOString(),
-        activeModel: model || "nvidia/nemotron-3.5-lightning-30b-a3b",
+        activeModel:
+          model ||
+          (process.env.AI_PROVIDER === "nebius"
+            ? process.env.NEBIUS_MODEL || "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+            : "nvidia/nemotron-3.5-lightning-30b-a3b"),
         routingMode,
         userId: user.uid,
       };
