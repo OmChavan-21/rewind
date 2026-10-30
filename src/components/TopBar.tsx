@@ -51,9 +51,16 @@ export function TopBar({
     <header className="h-16 px-6 bg-slate-950/70 backdrop-blur-md border-b border-slate-800/80 flex items-center justify-between sticky top-0 z-30 select-none">
       {/* Left: Breadcrumbs & status */}
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2 text-xs font-mono">
-          <span className="text-slate-400">rewind</span>
-          <span className="text-slate-500">/</span>
+        <div className="flex items-center gap-2.5 text-xs font-mono">
+          <div className="flex items-center gap-1.5">
+            <img
+              src="/brand/rewind-mark.png"
+              alt="Rewind"
+              className="w-4 h-4 object-contain filter drop-shadow-[0_0_4px_rgba(168,85,247,0.4)]"
+            />
+            <span className="text-slate-300 font-sans font-semibold tracking-tight">rewind</span>
+          </div>
+          <span className="text-slate-600">/</span>
           <button
             onClick={onOpenProjectManager}
             title="Click to switch projects"

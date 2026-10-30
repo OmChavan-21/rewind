@@ -147,12 +147,12 @@ export function AuthModal({
         {/* Header */}
         <div className="px-6 py-5 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-              {mode === "forgot" || mode === "reset" ? (
-                <KeyRound className="w-4 h-4" />
-              ) : (
-                <Lock className="w-4 h-4" />
-              )}
+            <div className="w-9 h-9 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center p-1.5 overflow-hidden shrink-0 shadow-inner">
+              <img
+                src="/brand/rewind-mark.png"
+                alt="Rewind"
+                className="w-full h-full object-contain filter drop-shadow-[0_0_6px_rgba(168,85,247,0.3)]"
+              />
             </div>
             <div>
               <h3 className="text-sm font-semibold text-slate-100">

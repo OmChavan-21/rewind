@@ -112,8 +112,12 @@ export function Sidebar({
         {/* Brand Header */}
         <div className="p-5 border-b border-slate-800/60 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="relative flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 via-teal-500 to-emerald-400 shadow-lg shadow-cyan-500/20 text-slate-950">
-              <FolderGit2 className="w-5 h-5 stroke-[2.2]" />
+            <div className="relative flex items-center justify-center w-9 h-9 rounded-xl bg-slate-900/90 border border-slate-800/80 p-1 shadow-lg shadow-purple-950/40 overflow-hidden shrink-0 group">
+              <img
+                src="/brand/rewind-mark.png"
+                alt="Rewind Logo"
+                className="w-full h-full object-contain filter drop-shadow-[0_0_8px_rgba(168,85,247,0.35)] transition-transform duration-300 group-hover:scale-105"
+              />
             </div>
             <div>
               <div className="flex items-center gap-2">
