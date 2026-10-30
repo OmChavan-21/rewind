@@ -279,17 +279,21 @@ export class CloudStorageAdapter implements IStorageProvider {
             }
           }
 
+          const projectData = Object.fromEntries(
+            Object.entries({
+              ...project,
+              userId,
+              updatedAt: new Date().toISOString(),
+            }).filter(([, value]) => value !== undefined)
+          );
+
           await db
             .collection("users")
             .doc(userId)
             .collection("projects")
             .doc(project.id)
             .set(
-              {
-                ...project,
-                userId,
-                updatedAt: new Date().toISOString(),
-              },
+              projectData,
               { merge: true }
             );
 

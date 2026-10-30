@@ -64,7 +64,7 @@ export async function POST(request: Request) {
       newProject = {
         id: uniqueId,
         name,
-        description,
+        ...(description ? { description } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         workspacePath: `projects/${uniqueId}`,
