@@ -51,6 +51,7 @@ export type ActionType =
   | "snapshot_create"
   | "file_modify"
   | "file_upload"
+  | "file_delete"
   | "demo_break"
   | "restore"
   | "validate"

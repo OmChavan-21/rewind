@@ -61,6 +61,7 @@ export const ALLOWED_ACTION_TYPES = new Set([
   "snapshot_create",
   "file_modify",
   "file_upload",
+  "file_delete",
   "demo_break",
   "restore",
   "validate",

@@ -24,9 +24,8 @@ import {
 import { getContextRoots } from "../src/server/workspaceContext";
 import {
   POST as uploadPost,
-  createBoundedBodyStream,
-  StreamPayloadTooLargeError,
 } from "../src/app/api/workspace/upload/route";
+import { createBoundedBodyStream, StreamPayloadTooLargeError } from "../src/server/boundedBodyStream";
 import { GET as filesGet } from "../src/app/api/workspace/files/route";
 import { GET as snapshotGet } from "../src/app/api/snapshots/[id]/route";
 import { POST as snapshotRestorePost } from "../src/app/api/snapshots/[id]/restore/route";

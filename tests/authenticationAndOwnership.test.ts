@@ -29,7 +29,7 @@ import { GET as projectDetailGet } from "../src/app/api/projects/[id]/route";
 import { GET as projectMemoriesGet, POST as projectMemoriesPost } from "../src/app/api/projects/[id]/memories/route";
 import { GET as chatSessionsGet, POST as chatSessionsPost } from "../src/app/api/chat/sessions/route";
 import { POST as chatMessagesPost } from "../src/app/api/chat/messages/route";
-import { POST as snapshotsPost } from "../src/app/api/snapshots/route";
+import { GET as snapshotsGet, POST as snapshotsPost } from "../src/app/api/snapshots/route";
 import { POST as snapshotRestorePost } from "../src/app/api/snapshots/[id]/restore/route";
 import { POST as applyPost } from "../src/app/api/ai/apply/route";
 import { POST as demoBreakPost } from "../src/app/api/actions/demo-break/route";
@@ -42,7 +42,7 @@ import { POST as authVerifyEmailPost } from "../src/app/api/auth/verify-email/ro
 import { POST as authForgotPasswordPost } from "../src/app/api/auth/forgot-password/route";
 import { POST as authResetPasswordPost } from "../src/app/api/auth/reset-password/route";
 import { GET as workspaceFilesGet } from "../src/app/api/workspace/files/route";
-import { GET as workspaceFileGet } from "../src/app/api/workspace/file/route";
+import { DELETE as workspaceFileDelete, GET as workspaceFileGet } from "../src/app/api/workspace/file/route";
 
 describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolation Suite", () => {
   let tempBaseDir: string;
@@ -63,6 +63,8 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     process.env.REWIND_STORE_DIR = testStore;
     // Enable strict auth mode for authentication & isolation assertions
     process.env.REWIND_STRICT_AUTH = "true";
+    // Tests opt into email verification explicitly; ignore local developer .env settings.
+    process.env.REQUIRE_EMAIL_VERIFICATION = "false";
   });
 
   afterEach(() => {
@@ -504,6 +506,72 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
     assert.strictEqual(demoRes.status, 200);
     const demoData = await demoRes.json();
     assert.strictEqual(demoData.project.id, "demo-workspace");
+  });
+
+  it("5.2. snapshots a project before deleting a file and restores it from that snapshot", async () => {
+    const owner = await registerUser(
+      { email: "delete_owner@example.com", password: "StrongPassword123!" },
+      testStore
+    );
+    const createRequest = new Request("http://localhost/api/projects", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${owner.token}`,
+      },
+      body: JSON.stringify({ name: "Delete recovery test", template: "demo" }),
+    });
+    const createResponse = await projectsPost(createRequest);
+    assert.strictEqual(createResponse.status, 200);
+    const { project } = await createResponse.json();
+
+    const listRequest = new Request(
+      `http://localhost/api/workspace/files?projectId=${project.id}`,
+      { headers: { Authorization: `Bearer ${owner.token}` } }
+    );
+    const beforeFilesResponse = await workspaceFilesGet(listRequest);
+    const beforeFilesBody = await beforeFilesResponse.json();
+    const targetFile = beforeFilesBody.files[0]?.path as string | undefined;
+    assert.ok(targetFile, "demo project should contain a file to delete");
+
+    const deleteRequest = new Request(
+      `http://localhost/api/workspace/file?path=${encodeURIComponent(targetFile)}&projectId=${project.id}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${owner.token}` } }
+    );
+    const deleteResponse = await workspaceFileDelete(deleteRequest);
+    const deleteBody = await deleteResponse.json();
+    assert.strictEqual(deleteResponse.status, 200, JSON.stringify(deleteBody));
+    const { safetySnapshotId } = deleteBody;
+    assert.ok(safetySnapshotId, "delete response should identify its safety snapshot");
+
+    const restoreRequest = new Request(
+      `http://localhost/api/snapshots/${safetySnapshotId}/restore`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${owner.token}`,
+        },
+        body: JSON.stringify({ projectId: project.id }),
+      }
+    );
+    const restoreResponse = await snapshotRestorePost(restoreRequest, {
+      params: Promise.resolve({ id: safetySnapshotId }),
+    });
+    assert.strictEqual(restoreResponse.status, 200);
+
+    const afterRestoreResponse = await workspaceFilesGet(listRequest);
+    const afterRestoreBody = await afterRestoreResponse.json();
+    assert.ok(afterRestoreBody.files.some((file: { path: string }) => file.path === targetFile));
+
+    const snapshotsRequest = new Request(
+      `http://localhost/api/snapshots?projectId=${project.id}`,
+      { headers: { Authorization: `Bearer ${owner.token}` } }
+    );
+    const snapshotsResponse = await snapshotsGet(snapshotsRequest);
+    assert.strictEqual(snapshotsResponse.status, 200);
+    const snapshotsBody = await snapshotsResponse.json();
+    assert.ok(snapshotsBody.snapshots.some((snapshot: { id: string }) => snapshot.id === safetySnapshotId));
   });
 
   // -------------------------------------------------------------------------
@@ -1020,7 +1088,7 @@ describe("Rewind Firebase & Multi-Tenant Authentication, Authorization & Isolati
           );
         },
         {
-          message: /Please verify your email address before logging in/i,
+          message: /Please verify your email address before signing in/i,
         }
       );
     } finally {

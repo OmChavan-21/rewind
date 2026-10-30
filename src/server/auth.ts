@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import nodemailer from "nodemailer";
+import type { Firestore } from "firebase-admin/firestore";
 import type { AuthUser, AuthSession, RegisterRequest, LoginRequest, UserRole } from "../types/auth";
 import type { ProjectMetadata } from "../types/project";
 import { getDefaultStoreRoot } from "../engine/recoveryEngine";
@@ -61,11 +62,15 @@ const SESSION_COOKIE_NAME = "rewind_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 interface EmailOtpRecord { codeHash: string; expiresAt: number; attempts: number }
 
+function isEmailVerificationRequired(): boolean {
+  return process.env.REQUIRE_EMAIL_VERIFICATION === "true" || process.env.REQUIRE_EMAIL_VERIFICATION === "1";
+}
+
 async function writeEmailOtp(email: string, record: EmailOtpRecord, storeRoot: string): Promise<void> {
   const db = await getFirestoreDb();
   if (db) {
     const id = crypto.createHash("sha256").update(email).digest("hex");
-    await (db as any).collection("email_verification_otps").doc(id).set({ email, ...record });
+    await (db as Firestore).collection("email_verification_otps").doc(id).set({ email, ...record });
     return;
   }
   const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
@@ -79,7 +84,7 @@ async function readEmailOtp(email: string, storeRoot: string): Promise<EmailOtpR
   const db = await getFirestoreDb();
   if (db) {
     const id = crypto.createHash("sha256").update(email).digest("hex");
-    const doc = await (db as any).collection("email_verification_otps").doc(id).get();
+    const doc = await (db as Firestore).collection("email_verification_otps").doc(id).get();
     return doc.exists ? doc.data() as EmailOtpRecord : null;
   }
   const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
@@ -93,7 +98,7 @@ async function deleteEmailOtp(email: string, storeRoot: string): Promise<void> {
   const db = await getFirestoreDb();
   if (db) {
     const id = crypto.createHash("sha256").update(email).digest("hex");
-    await (db as any).collection("email_verification_otps").doc(id).delete();
+    await (db as Firestore).collection("email_verification_otps").doc(id).delete();
     return;
   }
   const filePath = path.join(path.dirname(getAuthStorePath(storeRoot)), "email-verification-otps.json");
@@ -204,7 +209,7 @@ export async function verifyEmailOtp(email: string, code: string, storeRoot: str
     const firebaseUser = await getAuth().getUserByEmail(normalizedEmail);
     await getAuth().updateUser(firebaseUser.uid, { emailVerified: true });
     const db = await getFirestoreDb();
-    if (db) await (db as any).collection("users").doc(firebaseUser.uid).set({ emailVerified: true }, { merge: true });
+    if (db) await (db as Firestore).collection("users").doc(firebaseUser.uid).set({ emailVerified: true }, { merge: true });
   } else {
     const users = loadDevUsers(storeRoot);
     const user = Object.values(users).find((item) => item.email === normalizedEmail);
@@ -1214,7 +1219,7 @@ export async function loginUser(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, returnSecureToken: true }),
     });
-    let data = await res.json();
+    const data = await res.json();
     if (!res.ok || !data.idToken) {
       throw new Error(data.error?.message || "Invalid credentials.");
     }
@@ -1234,7 +1239,7 @@ export async function loginUser(
         // If Admin lookup is unavailable, retain the fail-closed behavior.
       }
 
-      if (!emailVerified) {
+      if (isEmailVerificationRequired() && !emailVerified) {
         throw new EmailVerificationRequiredError();
       }
     }
@@ -1301,7 +1306,7 @@ export async function loginUser(
     throw new Error("Invalid email or password.");
   }
 
-  if (matchedUser.emailVerified !== true) {
+  if (isEmailVerificationRequired() && matchedUser.emailVerified !== true) {
     throw new EmailVerificationRequiredError();
   }
 

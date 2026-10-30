@@ -10,6 +10,9 @@ import {
   NotFoundError,
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
+import { createWorkspaceSnapshot } from "@/server/workspaceSnapshots";
+import type { AgentAction } from "@/types/recovery";
+import crypto from "node:crypto";
 
 export async function GET(request: Request) {
   try {
@@ -70,15 +73,42 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "Query parameter 'path' is required." }, { status: 400 });
     }
 
-    const { storeRoot, projectId } = getContextRoots(projectIdParam);
+    const { workspaceRoot, storeRoot, projectId } = getContextRoots(projectIdParam);
     const user = await requireAuthenticatedUser(request, storeRoot);
     await assertProjectAccessAsync(user, projectId, storeRoot, "write");
     const provider = getStorageProvider(storeRoot);
+    const existingFiles = await provider.workspace.listFiles(projectId, user.uid);
+    if (!existingFiles.some((file) => file.path === filePath)) {
+      return NextResponse.json({ error: "File not found." }, { status: 404 });
+    }
+
+    const snapshot = await createWorkspaceSnapshot({
+      workspaceRoot,
+      storeRoot,
+      projectId,
+      userId: user.uid,
+      name: `Pre-delete: ${filePath}`.slice(0, 80),
+      description: `Safety snapshot captured before deleting ${filePath}.`,
+    });
     const deleted = await provider.workspace.deleteFile(projectId, filePath, user.uid);
     if (!deleted) {
       return NextResponse.json({ error: "File not found." }, { status: 404 });
     }
-    return NextResponse.json({ success: true, deletedPath: filePath });
+
+    const action: AgentAction = {
+      id: `act_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+      timestamp: new Date().toISOString(),
+      actionType: "file_delete",
+      summary: `Deleted '${filePath}' from project '${projectId}'`,
+      status: "success",
+      snapshotIdBefore: snapshot.id,
+      details: { path: filePath },
+      projectId,
+      userId: user.uid,
+    };
+    await provider.audit.recordAction(action, user.uid, projectId);
+
+    return NextResponse.json({ success: true, deletedPath: filePath, safetySnapshotId: snapshot.id });
   } catch (error: unknown) {
     if (
       error instanceof AuthenticationError ||

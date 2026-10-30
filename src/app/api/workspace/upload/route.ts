@@ -35,53 +35,8 @@ import {
 } from "@/server/auth";
 import { getStorageProvider, StorageError } from "@/server/storage/storageProvider";
 import { enforceRateLimitAsync } from "@/security/rateLimiter";
+import { createBoundedBodyStream, StreamPayloadTooLargeError } from "@/server/boundedBodyStream";
 import type { AgentAction, PermittedFile } from "@/types/recovery";
-
-export class StreamPayloadTooLargeError extends Error {
-  constructor(limitBytes: number) {
-    super(`Payload Too Large: Total upload size exceeded maximum limit of ${limitBytes} bytes.`);
-    this.name = "StreamPayloadTooLargeError";
-  }
-}
-
-/**
- * Bounds an incoming Web ReadableStream so that if cumulative wire bytes exceed maxBytes,
- * it immediately halts enqueuing and errors the stream. This prevents the server from buffering
- * unbounded payloads into heap memory during multipart or JSON parsing when Content-Length is missing or chunked.
- */
-export function createBoundedBodyStream(
-  sourceStream: ReadableStream<Uint8Array>,
-  maxBytes: number
-): ReadableStream<Uint8Array> {
-  let bytesRead = 0;
-  const reader = sourceStream.getReader();
-  let exceeded = false;
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (exceeded) return;
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          controller.close();
-          return;
-        }
-        bytesRead += (value?.byteLength || value?.length || 0);
-        if (bytesRead > maxBytes) {
-          exceeded = true;
-          controller.error(new StreamPayloadTooLargeError(maxBytes));
-          return;
-        }
-        controller.enqueue(value);
-      } catch (err) {
-        controller.error(err);
-      }
-    },
-    cancel(reason) {
-      return reader.cancel(reason).catch(() => {});
-    },
-  });
-}
 
 export async function POST(request: Request) {
   const rateLimitRes = await enforceRateLimitAsync(request, "workspace_upload", 20, 60_000);
