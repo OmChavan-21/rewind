@@ -87,13 +87,12 @@ export default function RewindDashboard() {
       const projId = targetProjectId || activeProjectId;
       setIsLoading(true);
       try {
-        const [wsRes, snapRes, actRes, fileRes, aiRes, projRes, diagRes, ragRes] =
+        const [wsRes, snapRes, actRes, fileRes, projRes, diagRes, ragRes] =
           await Promise.all([
             fetch(`/api/workspace?projectId=${projId}`),
             fetch(`/api/snapshots?projectId=${projId}`),
             fetch("/api/audit"),
             fetch(`/api/workspace/files?projectId=${projId}`),
-            fetch("/api/ai/status"),
             fetch("/api/projects"),
             fetch(`/api/workspace/diagnostics?projectId=${projId}`),
             fetch(`/api/rag/documents?projectId=${projId}`).catch(() => null),
@@ -104,7 +103,6 @@ export default function RewindDashboard() {
           snapData,
           actData,
           fileData,
-          aiData,
           projData,
           diagData,
           ragData,
@@ -113,7 +111,6 @@ export default function RewindDashboard() {
           snapRes.json(),
           actRes.json(),
           fileRes.json(),
-          aiRes.json().catch(() => ({})),
           projRes.json().catch(() => ({ projects: [] })),
           diagRes.json().catch(() => null),
           ragRes ? ragRes.json().catch(() => null) : null,
@@ -124,7 +121,6 @@ export default function RewindDashboard() {
         if (snapData.snapshots) setSnapshots(snapData.snapshots);
         if (actData.actions) setActions(actData.actions);
         setFiles(Array.isArray(fileData.files) ? fileData.files : []);
-        if (aiData.status) setAiStatus(aiData.status);
         if (projData.projects) setProjects(projData.projects);
         if (diagData) setDiagnosticsResult(diagData);
         if (ragData && ragData.documents) setRagDocsCount(ragData.documents.length);
@@ -142,6 +138,16 @@ export default function RewindDashboard() {
     [activeProjectId, showToast]
   );
 
+  const refreshAiStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ai/status");
+      const data = await res.json();
+      if (data?.status) setAiStatus(data.status);
+    } catch {
+      // AI status is secondary; workspace operations should remain available.
+    }
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
     const projId = activeProjectId;
@@ -151,19 +157,17 @@ export default function RewindDashboard() {
       fetch(`/api/snapshots?projectId=${projId}`).then((r) => r.json()),
       fetch("/api/audit").then((r) => r.json()),
       fetch(`/api/workspace/files?projectId=${projId}`).then((r) => r.json()),
-      fetch("/api/ai/status").then((r) => r.json()).catch(() => ({})),
       fetch("/api/projects").then((r) => r.json()).catch(() => ({ projects: [] })),
       fetch(`/api/workspace/diagnostics?projectId=${projId}`).then((r) => r.json()).catch(() => null),
       fetch(`/api/rag/documents?projectId=${projId}`).then((r) => r.json()).catch(() => null),
     ])
-      .then(([wsData, snapData, actData, fileData, aiData, projData, diagData, ragData]) => {
+      .then(([wsData, snapData, actData, fileData, projData, diagData, ragData]) => {
         if (!isMounted) return;
         if (wsData?.workspace) setWorkspace(wsData.workspace);
         if (wsData?.validation) setValidation(wsData.validation);
         if (snapData?.snapshots) setSnapshots(snapData.snapshots);
         if (actData?.actions) setActions(actData.actions);
         if (fileData?.files) setFiles(fileData.files);
-        if (aiData?.status) setAiStatus(aiData.status);
         if (projData?.projects) setProjects(projData.projects);
         if (diagData) setDiagnosticsResult(diagData);
         if (ragData?.documents) setRagDocsCount(ragData.documents.length);
@@ -185,6 +189,21 @@ export default function RewindDashboard() {
       isMounted = false;
     };
   }, [activeProjectId, showToast]);
+
+  // Provider reachability can require an external network request. Keep it out of
+  // the dashboard's critical load path so workspace controls render immediately.
+  useEffect(() => {
+    let isMounted = true;
+    fetch("/api/ai/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data?.status) setAiStatus(data.status);
+      })
+      .catch(() => {});
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Check authenticated user on load & detect password recovery action codes
   useEffect(() => {
@@ -620,7 +639,10 @@ export default function RewindDashboard() {
           activeProjectId={activeProjectId}
           onOpenSnapshotModal={() => setIsModalOpen(true)}
           onRunValidation={handleValidate}
-          onRefresh={() => refreshData()}
+          onRefresh={() => {
+            void refreshData();
+            void refreshAiStatus();
+          }}
           isLoading={isLoading}
           onOpenUpload={() => setIsUploadModalOpen(true)}
           onOpenProjectManager={() => setIsProjectModalOpen(true)}

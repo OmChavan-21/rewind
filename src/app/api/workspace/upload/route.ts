@@ -123,9 +123,10 @@ export async function POST(request: Request) {
       if (entries.length === 0) {
         entries = formData.getAll("file");
       }
+      const suppliedPaths = formData.getAll("paths");
 
       let cumulativeBytes = 0;
-      for (const entry of entries) {
+      for (const [entryIndex, entry] of entries.entries()) {
         if (
           typeof entry === "object" &&
           entry !== null &&
@@ -134,6 +135,10 @@ export async function POST(request: Request) {
         ) {
           const fileEntry = entry as unknown as { name?: string; arrayBuffer: () => Promise<ArrayBuffer> };
           const fileName = typeof fileEntry.name === "string" && fileEntry.name.trim() ? fileEntry.name.trim() : "uploaded_file";
+          const suppliedPath = suppliedPaths[entryIndex];
+          const relativePath = typeof suppliedPath === "string" && suppliedPath.trim()
+            ? suppliedPath.trim()
+            : fileName;
           const buffer = Buffer.from(await fileEntry.arrayBuffer());
           cumulativeBytes += buffer.length;
 
@@ -146,9 +151,9 @@ export async function POST(request: Request) {
             );
           }
 
-          const cleanName = sanitizeRelativePath(fileName);
+          const cleanName = sanitizeRelativePath(relativePath);
           uploadedFiles.push({
-            name: fileName,
+            name: cleanName,
             contentBuffer: buffer,
             relPath: cleanName,
           });
