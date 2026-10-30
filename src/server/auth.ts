@@ -471,6 +471,17 @@ export async function getAuthenticatedUser(
         }
 
         if (decoded && decoded.uid) {
+          let emailVerified = Boolean(decoded.email_verified);
+          if (!emailVerified) {
+            // A session may carry a stale claim from just before OTP
+            // verification. Confirm current state from Admin before accepting it.
+            try {
+              const adminUser = await getAuth().getUser(decoded.uid);
+              emailVerified = adminUser.emailVerified;
+            } catch {
+              emailVerified = false;
+            }
+          }
           return {
             uid: decoded.uid,
             email: decoded.email || `${decoded.uid}@firebase.user`,
@@ -482,7 +493,7 @@ export async function getAuthenticatedUser(
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             authProvider: "firebase",
-            emailVerified: Boolean(decoded.email_verified),
+            emailVerified,
           };
         }
       } catch {
@@ -1203,43 +1214,23 @@ export async function loginUser(
 
     let emailVerified = Boolean(data.emailVerified);
     if (!emailVerified) {
-      // Identity Toolkit can briefly return a stale emailVerified value after
-      // the Admin SDK marks a just-verified account. Only retry when the Admin
-      // record confirms verification; never bypass the verification check.
-      let verifiedByAdmin = false;
+      // Identity Toolkit may return a stale emailVerified value after an OTP
+      // is applied through the Admin SDK. Password authentication above still
+      // proves the credentials; use the authoritative Admin record for the
+      // verification gate instead of rejecting a verified account.
       try {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getAuth } = require("firebase-admin/auth");
         const adminUser = await getAuth().getUser(data.localId);
-        verifiedByAdmin = adminUser.emailVerified;
+        emailVerified = adminUser.emailVerified;
       } catch {
-        // If Admin lookup is unavailable, retain the normal fail-closed behavior.
-      }
-
-      if (!verifiedByAdmin) {
-        throw new Error(
-          "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
-        );
-      }
-
-      for (const delayMs of [250, 750, 1500]) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-        const retryResponse = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password, returnSecureToken: true }),
-        });
-        const retryData = await retryResponse.json();
-        if (!retryResponse.ok || !retryData.idToken) {
-          throw new Error(retryData.error?.message || "Invalid credentials.");
-        }
-        data = retryData;
-        emailVerified = Boolean(data.emailVerified);
-        if (emailVerified) break;
+        // If Admin lookup is unavailable, retain the fail-closed behavior.
       }
 
       if (!emailVerified) {
-        throw new Error("Your email is verified, but sign-in is still syncing. Please try again in a few seconds.");
+        throw new Error(
+          "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
+        );
       }
     }
 
