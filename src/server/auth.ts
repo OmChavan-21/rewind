@@ -18,6 +18,13 @@ export class AuthenticationError extends Error {
   }
 }
 
+export class EmailVerificationRequiredError extends Error {
+  constructor() {
+    super("Please verify your email address before signing in.");
+    this.name = "EmailVerificationRequiredError";
+  }
+}
+
 export class ForbiddenError extends Error {
   readonly statusCode = 403;
   constructor(message: string = "Forbidden: You do not have permission to perform this action.") {
@@ -1228,9 +1235,7 @@ export async function loginUser(
       }
 
       if (!emailVerified) {
-        throw new Error(
-          "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
-        );
+        throw new EmailVerificationRequiredError();
       }
     }
 
@@ -1297,9 +1302,7 @@ export async function loginUser(
   }
 
   if (matchedUser.emailVerified !== true) {
-    throw new Error(
-      "Please verify your email address before signing in. Open the verification link or enter the code sent to your inbox."
-    );
+    throw new EmailVerificationRequiredError();
   }
 
   const user: AuthUser = {

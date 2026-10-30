@@ -65,6 +65,16 @@ export function AuthModal({
 
         const data = await res.json();
         if (!res.ok || !data.user) {
+          if (data.requiresEmailVerification) {
+            setMode("verify");
+            setVerificationCode("");
+            if (data.otpSent) {
+              setSuccessMessage(data.message || `A six-digit verification code was sent to ${email}.`);
+            } else {
+              setError(data.error || "Your email is not verified. We could not send a new code yet.");
+            }
+            return;
+          }
           throw new Error(data.error || "Authentication failed. Please check your credentials.");
         }
 
