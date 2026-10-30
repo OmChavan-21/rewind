@@ -131,6 +131,9 @@ export class LocalStorageAdapter implements IStorageProvider {
       },
       async deleteFile(projectId: string, relativePath: string, _userId?: string): Promise<boolean> {
         void _userId;
+        if (!isPermittedFile(relativePath)) {
+          throw new SecurityError(`File extension not permitted: ${relativePath}`);
+        }
         const wsPath = resolveProjectWorkspace(projectId, storeRoot);
         const resolved = resolveAndValidatePath(wsPath, relativePath);
         if (fs.existsSync(resolved)) {

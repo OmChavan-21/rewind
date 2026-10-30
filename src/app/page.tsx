@@ -305,6 +305,28 @@ export default function RewindDashboard() {
     await refreshData(data.project.id);
   };
 
+  const handleDeleteWorkspaceFile = async (filePath: string) => {
+    try {
+      const params = new URLSearchParams({ path: filePath, projectId: activeProjectId });
+      const res = await fetch(`/api/workspace/file?${params.toString()}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to delete file.");
+      if (selectedFileForExplorer === filePath) setSelectedFileForExplorer("");
+      await refreshData(activeProjectId);
+      showToast({
+        type: "success",
+        title: "File Deleted",
+        description: `${filePath} was removed from this workspace.`,
+      });
+    } catch (error) {
+      showToast({
+        type: "error",
+        title: "Delete Failed",
+        description: error instanceof Error ? error.message : "Failed to delete file.",
+      });
+    }
+  };
+
   // Rerun Code Diagnostics
   const handleRerunDiagnostics = async () => {
     setIsLoadingDiagnostics(true);
@@ -688,6 +710,7 @@ export default function RewindDashboard() {
                   projectId={activeProjectId}
                   selectedFilePath={selectedFileForExplorer}
                   onSelectFile={(p) => setSelectedFileForExplorer(p)}
+                  onDeleteFile={handleDeleteWorkspaceFile}
                   onOpenUpload={() => setIsUploadModalOpen(true)}
                 />
               </div>

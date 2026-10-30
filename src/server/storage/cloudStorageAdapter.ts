@@ -474,6 +474,9 @@ export class CloudStorageAdapter implements IStorageProvider {
       deleteFile: async (projectId: string, relativePath: string, _userId?: string): Promise<boolean> => {
         await this.assertProjectOwnership(projectId, _userId);
         const normalized = normalizeRelativePath(relativePath);
+        if (!isPermittedFile(normalized)) {
+          throw new SecurityError(`File extension not permitted: ${normalized}`);
+        }
         const bucket = await this.getBucket();
         const cloudPath = `${this.workspacePrefix(projectId, _userId)}${normalized}`;
         const file = bucket.file(cloudPath);

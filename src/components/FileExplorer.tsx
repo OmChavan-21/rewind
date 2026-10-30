@@ -11,12 +11,14 @@ import {
   Copy,
   UploadCloud,
   FolderPlus,
+  Trash2,
 } from "lucide-react";
 import type { PermittedFile } from "@/types/recovery";
 
 interface FileExplorerProps {
   files: PermittedFile[];
   onSelectFile?: (filePath: string) => void;
+  onDeleteFile?: (filePath: string) => Promise<void>;
   selectedFilePath?: string;
   projectId?: string;
   onOpenUpload?: () => void;
@@ -25,6 +27,7 @@ interface FileExplorerProps {
 export function FileExplorer({
   files,
   onSelectFile,
+  onDeleteFile,
   selectedFilePath,
   projectId,
   onOpenUpload,
@@ -148,26 +151,47 @@ export function FileExplorer({
               {files.map((file) => {
                 const isSelected = activeFile === file.path;
                 return (
-                  <button
+                  <div
                     key={file.path}
-                    onClick={() => {
-                      setUserSelectedFile(file.path);
-                      onSelectFile?.(file.path);
-                    }}
-                    className={`w-full flex items-center justify-between p-2 rounded-lg text-left text-xs font-mono transition ${
+                    className={`flex items-center rounded-lg border transition ${
                       isSelected
-                        ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 font-semibold"
-                        : "text-slate-300 hover:bg-slate-800/60 hover:text-white border border-transparent"
+                        ? "bg-cyan-500/10 border-cyan-500/20"
+                        : "border-transparent hover:bg-slate-800/60"
                     }`}
                   >
-                    <div className="flex items-center gap-2 truncate">
-                      {getFileIcon(file.extension)}
-                      <span className="truncate">{file.path}</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400 shrink-0 ml-2">
-                      {(file.size / 1024).toFixed(1)} KB
-                    </span>
-                  </button>
+                    <button
+                      onClick={() => {
+                        setUserSelectedFile(file.path);
+                        onSelectFile?.(file.path);
+                      }}
+                      className={`min-w-0 flex-1 flex items-center justify-between p-2 rounded-l-lg text-left text-xs font-mono ${
+                        isSelected ? "text-cyan-300 font-semibold" : "text-slate-300 hover:text-white"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        {getFileIcon(file.extension)}
+                        <span className="truncate">{file.path}</span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 shrink-0 ml-2">
+                        {(file.size / 1024).toFixed(1)} KB
+                      </span>
+                    </button>
+                    {onDeleteFile && (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${file.path}`}
+                        title={`Delete ${file.path}`}
+                        onClick={async () => {
+                          if (!window.confirm(`Delete ${file.path}? This cannot be undone.`)) return;
+                          await onDeleteFile(file.path);
+                          setUserSelectedFile((current) => current === file.path ? "" : current);
+                        }}
+                        className="shrink-0 p-2 mr-1 rounded-md text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 );
               })}
             </div>

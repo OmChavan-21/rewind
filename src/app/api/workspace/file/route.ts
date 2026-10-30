@@ -60,3 +60,40 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: message }, { status: 404 });
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const filePath = searchParams.get("path");
+    const projectIdParam = searchParams.get("projectId") || undefined;
+    if (!filePath) {
+      return NextResponse.json({ error: "Query parameter 'path' is required." }, { status: 400 });
+    }
+
+    const { storeRoot, projectId } = getContextRoots(projectIdParam);
+    const user = await requireAuthenticatedUser(request, storeRoot);
+    await assertProjectAccessAsync(user, projectId, storeRoot, "write");
+    const provider = getStorageProvider(storeRoot);
+    const deleted = await provider.workspace.deleteFile(projectId, filePath, user.uid);
+    if (!deleted) {
+      return NextResponse.json({ error: "File not found." }, { status: 404 });
+    }
+    return NextResponse.json({ success: true, deletedPath: filePath });
+  } catch (error: unknown) {
+    if (
+      error instanceof AuthenticationError ||
+      error instanceof ForbiddenError ||
+      error instanceof NotFoundError
+    ) {
+      return NextResponse.json({ error: error.message }, { status: error.statusCode });
+    }
+    if (error instanceof SecurityError) {
+      return NextResponse.json({ error: error.message }, { status: 403 });
+    }
+    if (error instanceof StorageError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.statusCode });
+    }
+    const message = error instanceof Error ? error.message : "Error deleting file";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
