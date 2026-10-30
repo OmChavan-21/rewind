@@ -516,7 +516,7 @@ export function AIAssistantPanel({
             </div>
           </div>
           <div className="text-[10px] text-slate-400 font-sans leading-relaxed">
-            Provider-reported usage: {providerUsage.totalTokens.toLocaleString()} tokens across {providerUsage.requests} requests.
+            Provider-reported AI proposal usage: {providerUsage.totalTokens.toLocaleString()} tokens across {providerUsage.requests} proposals.
             <span className="block">This is not your Nebius wallet balance; check that in the Token Factory console.</span>
           </div>
 
